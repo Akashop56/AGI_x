@@ -83,12 +83,31 @@ jobs:
           ls -la app/build/outputs/apk/debug/
 
           AAPT2=$(find "$ANDROID_HOME/build-tools" -name aapt2 | sort -V | tail -1)
+          BADGING=$("$AAPT2" dump badging "$APK")
+
           echo "### APK verification" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          "$AAPT2" dump badging "$APK" | grep -E "^(package|launchable-activity|sdkVersion|targetSdkVersion|uses-permission: name='android.permission.(RECORD_AUDIO|CAMERA|INTERNET|POST_NOTIFICATIONS|FOREGROUND_SERVICE_MICROPHONE)')" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "$BADGING" | grep -E "^(package|launchable-activity|sdkVersion|targetSdkVersion|uses-permission)" | tee -a "$GITHUB_STEP_SUMMARY"
           unzip -l "$APK" | grep -E "classes.dex|resources.arsc|AndroidManifest.xml" | tee -a "$GITHUB_STEP_SUMMARY"
           sha256sum "$APK" | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          fail() { echo "::error::$1"; exit 1; }
+
+          echo "$BADGING" | grep -q "package: name='com.brahma.connect'" \
+            || fail "APK package is not com.brahma.connect"
+          echo "$BADGING" | grep -q "launchable-activity" \
+            || fail "APK has no launchable activity"
+
+          # The body needs these at runtime (microphone streaming, camera frames,
+          # gateway socket, foreground service with the microphone type).
+          for perm in RECORD_AUDIO CAMERA INTERNET POST_NOTIFICATIONS FOREGROUND_SERVICE FOREGROUND_SERVICE_MICROPHONE; do
+            echo "$BADGING" | grep -q "android.permission.$perm" \
+              || fail "merged manifest is missing permission $perm"
+          done
+
+          grep -q "PhoneAudioEngine" <(unzip -p "$APK" classes.dex | strings) \
+            || echo "::warning::PhoneAudioEngine class not found in classes.dex (audio bridge may not be linked)"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v7
