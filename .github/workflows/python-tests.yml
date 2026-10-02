@@ -1,0 +1,60 @@
+name: Python tests (mock API)
+
+# Runs the offline test suite.  No API key is ever configured here: every
+# Google call is served by the doubles in tests/mock_genai.py, and the suite
+# fails if something tries to reach the network (see tests/test_api_mocks.py).
+
+on:
+  push:
+    branches: [main, master, 'arena/**']
+    paths:
+      - '**.py'
+      - 'requirements.txt'
+      - 'requirements-optional.txt'
+      - '.github/workflows/python-tests.yml'
+  pull_request:
+    paths:
+      - '**.py'
+      - 'requirements.txt'
+      - '.github/workflows/python-tests.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: python-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: pytest (offline, no API key)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # Explicitly empty: the suite must pass without credentials.
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      - name: Assert no API key is available
+        run: |
+          test -z "${GEMINI_API_KEY:-}" || { echo "::error::GEMINI_API_KEY must be empty in CI"; exit 1; }
+          test -z "${GOOGLE_API_KEY:-}" || { echo "::error::GOOGLE_API_KEY must be empty in CI"; exit 1; }
+
+      - name: Run mock API tests
+        run: pytest tests/test_api_mocks.py -q
+
+      - name: Run the full suite
+        run: pytest tests/ -q
