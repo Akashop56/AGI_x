@@ -7,11 +7,16 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-import pyautogui
-import pyperclip
+from core import pc_compat
 
-pyautogui.FAILSAFE = True
-pyautogui.PAUSE = 0.08
+# Desktop-only automation. On Android/Termux the companion app is the body;
+# these imports are optional so the module stays importable everywhere.
+pyautogui = pc_compat.optional_import("pyautogui")
+pyperclip = pc_compat.optional_import("pyperclip")
+
+if pyautogui is not None:
+    pyautogui.FAILSAFE = True
+    pyautogui.PAUSE = 0.08
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -251,6 +256,12 @@ def send_message(
     platform     = params.get("platform", "whatsapp").strip().lower()
     mode         = params.get("mode", "dm").strip().lower()
     media_path   = params.get("media_path", "").strip()
+
+    if pyautogui is None:
+        return pc_compat.unavailable(
+            "Browser based messaging",
+            detail="Ask the companion app to send the message instead.",
+        )
 
     if mode != "upload" and not receiver:
         return "Please specify who to send the message to, sir."

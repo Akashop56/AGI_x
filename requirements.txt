@@ -1,24 +1,42 @@
+# Brahma Evo — headless server (Android / Termux) requirements
+#
+# This file is the "just make the brain run" set: it is deliberately free of
+# PyQt6, desktop automation (pyautogui / pyperclip), screen grabbers and native
+# audio wheels, because the companion Android app is the body and UI.
+#
+# Desktop extras (local mic/speaker, pyautogui, Playwright, Instagram,
+# Discord, matplotlib …) live in requirements-optional.txt and are not needed
+# to pair with the phone.
+#
+# Termux quick start:
+#   pkg install python clang rust binutils libjpeg-turbo zlib termux-api
+#   pip install --upgrade pip wheel setuptools
+#   pip install -r requirements.txt
+#   ./scripts/setup_termux.sh        # optional, does the above for you
+
+# --- AI brain -----------------------------------------------------------------
 google-genai
-google-generativeai
-Pillow
 requests
-python-kasa
+numpy
+
+# --- gateway (brahma_connect, port 8765) + dashboard (port 8000) --------------
+fastapi
+uvicorn
+websockets
+cryptography
+python-multipart
+qrcode
+zeroconf
+
+# --- actions that ship enabled on Android -------------------------------------
+Pillow
 beautifulsoup4
+ddgs
 duckduckgo-search
-pyperclip
-instagrapi
-send2trash
 youtube-transcript-api
 openpyxl
 python-pptx
 python-docx
-reportlab
-discord.py
-fastapi
-uvicorn[standard]
-cryptography
-qrcode[pil]
-python-multipart
+send2trash
 edge-tts
-matplotlib
-speedtest-cli
+python-kasa

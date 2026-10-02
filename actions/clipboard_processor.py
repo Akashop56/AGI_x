@@ -5,12 +5,19 @@ Clipboard Processor Action for Brahma AI.
 Allows the AI to instantly read whatever text the user has copied to their Windows clipboard.
 """
 
-import pyperclip
+from core import pc_compat
+
+try:
+    import pyperclip  # noqa: F401  (legacy installs; only used as a fallback)
+except Exception:  # pragma: no cover - Android/Termux has no pyperclip
+    pyperclip = None
 
 def process_clipboard(parameters: dict | None = None, player=None) -> str:
     """Reads the current text from the clipboard."""
     try:
-        content = pyperclip.paste()
+        from core import pc_compat
+
+        content = pc_compat.clipboard_get()
         content = (content or "").strip()
         
         if not content:

@@ -7,12 +7,31 @@
 ### *The Self-Evolving, Multimodal Personal AI Desktop Environment*
 
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue?logo=python&logoColor=white)](https://python.org)
-[![PyQt6](https://img.shields.io/badge/GUI-PyQt6%20%2B%20WebEngine-darkgreen?logo=qt&logoColor=white)](https://riverbankcomputing.com/software/pyqt/)
+[![Headless](https://img.shields.io/badge/Backend-Headless%20server-darkgreen?logo=python&logoColor=white)](TERMUX.md)
 [![Gemini 2.5](https://img.shields.io/badge/Model-Gemini%202.5%20Flash%20Native%20Audio-orange?logo=google&logoColor=white)](https://ai.google.dev/)
 [![MCP](https://img.shields.io/badge/Protocol-Model%20Context%20Protocol-purple)](https://modelcontextprotocol.io/)
-[![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6?logo=windows&logoColor=white)](https://microsoft.com/windows)
+[![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)%20%7C%20Desktop-3DDC84?logo=android&logoColor=white)](TERMUX.md)
 
 </div>
+
+---
+
+## 📱 Headless on Android (Termux)
+
+Brahma Evo now runs as a **headless backend**. The Python process owns the
+brain (Gemini Live, memory, dynamic skills) and the companion **Brahma Connect
+Android app is the body and UI**: it streams the microphone, plays Brahma's
+voice and renders every HUD/chat event.
+
+```bash
+bash scripts/setup_termux.sh      # Termux: system + Python deps
+python main.py --set-key AIza...  # store the Gemini key
+python main.py                    # gateway :8765 + dashboard :8000
+```
+
+No PyQt6, no display server, no desktop automation required — see
+[TERMUX.md](TERMUX.md) for the full guide, the phone audio protocol and the
+troubleshooting table.
 
 ---
 
@@ -153,8 +172,8 @@
 
 ```
 Brahma AI Evo/
-├── main.py                     # Main application entry point & live event loop
-├── ui.py                       # PyQt6 GUI: Command Bar, Waveform FFT, HUD Wings, Chat
+├── main.py                     # Headless server entry point (gateway + brain + dashboard)
+├── ui.py                       # Headless UI facade: JSON event bus for the phone app
 ├── actions/                    # Built-in action tools & executors
 │   ├── circuit_assembler.py    # Hardware vision & circuit solver engine
 │   ├── spotify_controller.py   # Spotify MCP client & playback manager
@@ -163,8 +182,9 @@ Brahma AI Evo/
 │   ├── call_assistant.py       # Android phone call proxy & transcript analyzer
 │   └── office_builder.py       # Excel, Word, PPTX & PDF generators
 ├── core/                       # Core system architecture
-│   ├── circuit_hud.py          # Compact in-app holographic circuit popup overlay
-│   ├── globe_window.py         # 3D WebGL Earth globe & map controller
+│   ├── pc_compat.py            # Android/Termux portability layer (PC features degrade cleanly)
+│   ├── phone_body.py           # Phone-as-body bridge: audio in/out + UI events over :8765
+│   ├── circuit_html.py         # Qt-free circuit schematic renderer
 │   ├── skill_forge.py          # Project Ultron: LLM skill synthesizer
 │   ├── skill_crucible.py       # Isolated test execution sandbox
 │   ├── dynamic_registry.py     # Runtime tool hot-reloader & dispatcher
@@ -173,14 +193,15 @@ Brahma AI Evo/
 │   ├── circuit_schematic.py    # Modular circuit schematic feature
 │   └── spotify_mcp.py          # Modular Spotify feature
 ├── smart_home/                 # Smart device provider & discovery services
-└── brahma-connect-android/     # Companion Android mobile application
+├── scripts/setup_termux.sh     # One-shot Android/Termux bootstrap
+└── brahma-connect-android/     # Companion Android app: UI + microphone/speaker body
 ```
 
 ---
 
 ## 🔒 Security & Privacy
 
-- All long-term memories, credentials, and configuration files are stored locally in `%LOCALAPPDATA%\BrahmaAI\`.
+- All long-term memories, credentials, and configuration files are stored locally in `BrahmaAI/` (on Windows: `%LOCALAPPDATA%\BrahmaAI\`; on Android/Termux: `~/BrahmaAI/`).
 - External tools run through permission sentries and the isolated Crucible sandbox.
 - Audio and video frames are only streamed during active conversation sessions.
 

@@ -1,11 +1,18 @@
 import importlib
 import io
 
+import pytest
+
+pytest.importorskip("mss", reason="desktop screen capture is an optional extra; the phone supplies screen frames")
+PIL = pytest.importorskip("PIL", reason="Pillow is required by the capture pipeline")
+
 from PIL import Image
 
 
 def test_capture_screenshot_falls_back_to_primary_monitor(monkeypatch):
     screen_processor = importlib.import_module("actions.screen_processor")
+    if screen_processor.mss is None or screen_processor.mss_tools is None:
+        pytest.skip("mss is not installed (desktop-only capture path)")
 
     class FakeShot:
         rgb = Image.new("RGB", (10, 10), color="white").convert("RGB")

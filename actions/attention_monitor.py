@@ -4,7 +4,9 @@ import hashlib
 import os
 import platform
 import re
+import shutil
 import sqlite3
+import subprocess
 import tempfile
 import threading
 import time
@@ -16,7 +18,10 @@ import xml.etree.ElementTree as ET
 import ctypes
 from ctypes import wintypes
 
-import pyautogui
+from core import pc_compat
+
+pyautogui = pc_compat.optional_import("pyautogui")
+_windll = pc_compat.safe_windll()
 
 try:
     import psutil
@@ -236,7 +241,7 @@ def _contains_any(hay: str, needles: tuple[str, ...]) -> bool:
 def _window_title(hwnd: int) -> str:
     buf = ctypes.create_unicode_buffer(512)
     try:
-        ctypes.windll.user32.GetWindowTextW(hwnd, buf, len(buf))
+        _windll.user32.GetWindowTextW(hwnd, buf, len(buf))
     except Exception:
         return ""
     return _norm(buf.value)
@@ -245,7 +250,7 @@ def _window_title(hwnd: int) -> str:
 def _window_class(hwnd: int) -> str:
     buf = ctypes.create_unicode_buffer(256)
     try:
-        ctypes.windll.user32.GetClassNameW(hwnd, buf, len(buf))
+        _windll.user32.GetClassNameW(hwnd, buf, len(buf))
     except Exception:
         return ""
     return _norm(buf.value)
@@ -254,7 +259,7 @@ def _window_class(hwnd: int) -> str:
 def _window_pid(hwnd: int) -> int:
     pid = wintypes.DWORD()
     try:
-        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        _windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
     except Exception:
         return 0
     return int(pid.value)
@@ -262,7 +267,10 @@ def _window_pid(hwnd: int) -> int:
 
 def _enum_visible_windows() -> list[dict]:
     results: list[dict] = []
-    user32 = ctypes.windll.user32
+    if not hasattr(ctypes, "WINFUNCTYPE"):
+        # Android/Linux: the companion app publishes window state instead.
+        return results
+    user32 = _windll.user32
     enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
 
     @enum_proc
@@ -321,11 +329,11 @@ def _cleanup_current_audio() -> None:
     global _current_player_alias, _current_audio_path
     if _current_player_alias is not None:
         try:
-            ctypes.windll.winmm.mciSendStringW(f"stop {_current_player_alias}", None, 0, None)
+            _windll.winmm.mciSendStringW(f"stop {_current_player_alias}", None, 0, None)
         except Exception:
             pass
         try:
-            ctypes.windll.winmm.mciSendStringW(f"close {_current_player_alias}", None, 0, None)
+            _windll.winmm.mciSendStringW(f"close {_current_player_alias}", None, 0, None)
         except Exception:
             pass
         _current_player_alias = None
@@ -367,9 +375,26 @@ def _speak_edge_native(text: str) -> None:
         _cleanup_current_audio()
         return
 
+    if not hasattr(ctypes, "windll"):
+        # Android: let Termux:API play the generated clip, if available.
+        exe = shutil.which("termux-media-player") or shutil.which("termux-media-player-play")
+        if exe:
+            try:
+                subprocess.run([exe, "play", audio_path], check=False, timeout=120)
+            except Exception as exc:  # pragma: no cover
+                print(f"[AttentionMonitor] Termux playback failed: {exc}")
+            finally:
+                try:
+                    os.remove(audio_path)
+                except Exception:
+                    pass
+        else:
+            print("[AttentionMonitor] Local playback unavailable; the companion app handles voice output.")
+        return
+
     player_alias = f"brahma_tts_{uuid.uuid4().hex}"
     try:
-        result = ctypes.windll.winmm.mciSendStringW(
+        result = _windll.winmm.mciSendStringW(
             f'open "{audio_path}" type mpegvideo alias {player_alias}',
             None,
             0,
@@ -378,7 +403,7 @@ def _speak_edge_native(text: str) -> None:
         if result != 0:
             raise RuntimeError(f"MCI open failed: {result}")
 
-        result = ctypes.windll.winmm.mciSendStringW(
+        result = _windll.winmm.mciSendStringW(
             f"play {player_alias} wait",
             None,
             0,
@@ -532,6 +557,9 @@ class AttentionMonitor:
     def start(self) -> None:
         if self._running:
             return
+        if not self._local_monitoring_supported():
+            print("[AttentionMonitor] Local monitoring unavailable; waiting for companion app events.")
+            return
         self._last_id = self._current_max_id()
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -539,6 +567,9 @@ class AttentionMonitor:
 
     def stop(self) -> None:
         self._running = False
+
+    def _local_monitoring_supported(self) -> bool:
+        return os.name == "nt" and self._db.exists()
 
     def _loop(self) -> None:
         if not self._db.exists():

@@ -15,9 +15,13 @@ import urllib.request
 import urllib.parse
 import json
 import os
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+except Exception:  # matplotlib is an optional chart extra on Android/Termux
+    matplotlib = None
+    plt = None
 
 def _geocode_location(area_name: str):
     if not area_name or area_name.lower().strip() in ('my area', 'local', 'here', 'current', 'device', 'current location'):
@@ -57,6 +61,9 @@ def _geocode_location(area_name: str):
     return 19.23, 73.12, area_name.title()
 
 def execute(**kwargs):
+    if plt is None:
+        return {"error": "Chart rendering needs matplotlib, which is not installed on this device. "
+                          "Desktop: pip install matplotlib — Termux: pkg install python-matplotlib."}
     area_input = kwargs.get('area') or kwargs.get('location') or kwargs.get('city') or 'local'
     center_lat, center_lon, area_name = _geocode_location(str(area_input))
 

@@ -13,7 +13,13 @@ import subprocess
 import time
 from typing import Any, Callable, Dict, List, Optional, Union
 
-import psutil
+from core import pc_compat
+
+psutil = pc_compat.optional_import("psutil")
+_PSUTIL_HINT = pc_compat.unavailable(
+    "System diagnostics",
+    detail="Install it with 'pip install psutil' to enable hardware telemetry.",
+)
 
 logger = logging.getLogger("SystemDiagnosticsMCP")
 
@@ -39,6 +45,9 @@ PROTECTED_SYSTEM_PROCESSES = {
 # ── 1. Telemetry and Hardware Vitals ──────────────────────────────────────────
 
 def get_battery_status() -> Dict[str, Any]:
+    if psutil is None:
+        return {"has_battery": False, "percent": 100, "power_plugged": True, "status_text": _PSUTIL_HINT, "secs_left": -1}
+
     """Retrieves battery percentage, charging state, and estimated runtime."""
     try:
         battery = psutil.sensors_battery()
@@ -81,6 +90,9 @@ def get_battery_status() -> Dict[str, Any]:
 
 
 def get_cpu_temp() -> Optional[float]:
+    if psutil is None:
+        return None
+
     """Attempts to read CPU temperature via WMI / psutil sensors."""
     try:
         temps = psutil.sensors_temperatures()
@@ -107,6 +119,9 @@ def get_cpu_temp() -> Optional[float]:
 
 
 def get_storage_status() -> List[Dict[str, Any]]:
+    if psutil is None:
+        return []
+
     """Inspects storage disk partitions and available space."""
     drives = []
     try:
@@ -131,6 +146,9 @@ def get_storage_status() -> List[Dict[str, Any]]:
 
 
 def get_display_brightness_status() -> Dict[str, Any]:
+    if psutil is None:
+        return {"supported": False, "message": _PSUTIL_HINT}
+
     """Inspects connected monitors and current brightness levels."""
     try:
         import screen_brightness_control as sbc
@@ -156,6 +174,9 @@ def get_display_brightness_status() -> Dict[str, Any]:
 
 
 def get_full_diagnostics() -> Dict[str, Any]:
+    if psutil is None:
+        return {"error": _PSUTIL_HINT}
+
     """Returns a complete snapshot of CPU, RAM, Battery, Storage, and Display vitals."""
     cpu_percent = psutil.cpu_percent(interval=0.2)
     cpu_count_logical = psutil.cpu_count(logical=True)
@@ -195,6 +216,9 @@ def get_full_diagnostics() -> Dict[str, Any]:
 # ── 2. RAM and CPU Hog Analysis ───────────────────────────────────────────────
 
 def get_top_processes(sort_by: str = "memory", limit: int = 5) -> List[Dict[str, Any]]:
+    if psutil is None:
+        return []
+
     """
     Identifies top resource-consuming applications.
     Groups multiple processes of the same application (e.g. Chrome tabs/workers).
@@ -247,6 +271,9 @@ def get_top_processes(sort_by: str = "memory", limit: int = 5) -> List[Dict[str,
 # ── 3. Safe Process Termination ─────────────────────────────────────────────
 
 def kill_process(target: Union[str, int], force: bool = False) -> Dict[str, Any]:
+    if psutil is None:
+        return {"success": False, "message": _PSUTIL_HINT}
+
     """
     Terminates an application or process safely by name or PID.
     Rejects attempts to terminate protected critical Windows system components.
@@ -321,6 +348,9 @@ def kill_process(target: Union[str, int], force: bool = False) -> Dict[str, Any]
 # ── 4. Display Brightness Control ───────────────────────────────────────────
 
 def set_brightness(level: int, monitor: Optional[Union[int, str]] = None, relative: bool = False) -> Dict[str, Any]:
+    if psutil is None:
+        return {"success": False, "message": _PSUTIL_HINT}
+
     """
     Adjusts brightness across all monitors or a specific display.
     Supports absolute percentage (0-100) or relative offset (+10, -20).
@@ -382,6 +412,9 @@ def system_diagnostics(
     """
     params = parameters or {}
     action = (params.get("action") or params.get("command") or "status").lower().strip()
+
+    if psutil is None:
+        return _PSUTIL_HINT
 
     if action in ("ram_hogs", "ram", "memory", "top_ram"):
         limit = int(params.get("limit") or 5)

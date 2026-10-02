@@ -5,7 +5,19 @@ import platform
 import shutil
 import subprocess
 from pathlib import Path
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from core import pc_compat
+
+# Playwright ships desktop browser binaries; keep the module importable and
+# report the capability instead of crashing the brain at import time.
+_playwright_api = pc_compat.optional_import("playwright.async_api")
+if _playwright_api is not None:
+    async_playwright = _playwright_api.async_playwright
+    PlaywrightTimeout = _playwright_api.TimeoutError
+else:  # pragma: no cover - Android/Termux path
+    async_playwright = None
+
+    class PlaywrightTimeout(Exception):
+        pass
 
 
 def _log(message: str) -> None:
@@ -557,6 +569,14 @@ def browser_control(
         time_ms     : milliseconds to wait
     """
     import time
+
+    if async_playwright is None:
+        # Android/Termux: the companion app opens URLs; there is no browser engine here.
+        return pc_compat.unavailable(
+            "Browser automation",
+            detail="Ask the companion app to open the link instead.",
+        )
+
     from actions.playwright_mcp_client import get_playwright_mcp_client
 
     action = (parameters or {}).get("action", "").lower().strip()

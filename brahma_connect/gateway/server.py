@@ -108,10 +108,39 @@ class BrahmaGateway:
         self._log: list[dict[str, Any]] = []
         self._pending_requests: dict[str, dict[str, Any]] = {}
         self.on_chat_message = None
+        # Additive hooks used by the headless/phone-body bridge. Existing
+        # clients are unaffected: all of these default to None.
+        self.on_device_event = None
+        self.on_device_connected = None
+        self.on_device_disconnected = None
         self.app = self._build_app()
 
     def is_running(self) -> bool:
         return self._running and not self._shutdown.is_set()
+
+    def broadcast_event(self, payload: dict[str, Any]) -> bool:
+        """Send an ``event`` message to every connected device."""
+        loop = getattr(self, "_event_loop", None)
+        if loop is None or loop.is_closed():
+            return False
+        message = build_message(ProtocolTypes.EVENT, payload)
+        try:
+            future = asyncio.run_coroutine_threadsafe(self.hub.broadcast_chat_message(message), loop)
+            future.add_done_callback(lambda f: f.exception())
+            return True
+        except Exception:
+            return False
+
+    def broadcast_chat_message(self, payload: dict[str, Any]) -> bool:
+        loop = getattr(self, "_event_loop", None)
+        if loop is None or loop.is_closed():
+            return False
+        message = build_message(ProtocolTypes.CHAT_MESSAGE, payload)
+        try:
+            asyncio.run_coroutine_threadsafe(self.hub.broadcast_chat_message(message), loop)
+            return True
+        except Exception:
+            return False
 
     def request_shutdown(self) -> None:
         self._shutdown.set()
@@ -478,6 +507,11 @@ class BrahmaGateway:
                         self._append_log("DEVICE_CONNECTED", device_id=record.device_id, name=record.name)
                         await websocket.send_json(build_message(ProtocolTypes.DEVICE_ONLINE, {"device": record.to_dict()}, request_id=request_id))
                         await websocket.send_json(build_message(ProtocolTypes.CAPABILITIES, {"device_id": record.device_id, "capabilities": record.capabilities}, request_id=request_id))
+                        if self.on_device_connected:
+                            try:
+                                self.on_device_connected(record.device_id, record.to_dict())
+                            except Exception:
+                                pass
                         continue
 
                     if msg_type == ProtocolTypes.PAIR_REQUEST:
@@ -495,6 +529,11 @@ class BrahmaGateway:
 
                     if msg_type == ProtocolTypes.EVENT:
                         self._append_log("EVENT", device_id=device_id, payload=payload)
+                        if self.on_device_event:
+                            try:
+                                self.on_device_event(device_id, payload)
+                            except Exception:
+                                pass
                         continue
 
                     if msg_type == ProtocolTypes.CHAT_MESSAGE:
@@ -516,6 +555,11 @@ class BrahmaGateway:
                 if detached:
                     self.device_manager.mark_offline(detached)
                     self._append_log("DEVICE_DISCONNECTED", device_id=detached)
+                    if self.on_device_disconnected:
+                        try:
+                            self.on_device_disconnected(detached)
+                        except Exception:
+                            pass
 
         return app
 
@@ -523,10 +567,19 @@ class BrahmaGateway:
         if not self.config.enabled:
             return
         self._running = True
-        advertised = False
+        self._event_loop = asyncio.get_running_loop()
+
+        # mDNS advertisement runs on its own daemon thread and must never delay
+        # the WebSocket listener: on some networks multicast setup blocks for
+        # seconds, and on Android the app can fall back to a manual host/port.
         if self.config.advertise:
-            advertised = self.discovery.start(host=self.config.host, port=self.config.port, properties={"service": "brahma", "version": "1"})
-        self._append_log("GATEWAY_STARTING", host=self.config.host, port=self.config.port, advertised=advertised)
+            threading.Thread(
+                target=self._advertise,
+                daemon=True,
+                name="brahma-mdns",
+            ).start()
+
+        self._append_log("GATEWAY_STARTING", host=self.config.host, port=self.config.port, advertised=bool(self.config.advertise))
         try:
             cfg = uvicorn.Config(
                 self.app,
@@ -543,3 +596,17 @@ class BrahmaGateway:
             self._server = None
             self.discovery.stop()
             self._running = False
+
+    def _advertise(self) -> None:
+        """Best-effort Zeroconf registration; failures are logged, never fatal."""
+        try:
+            ok = self.discovery.start(
+                host=self.config.host,
+                port=self.config.port,
+                properties={"service": "brahma", "version": "1"},
+            )
+            self._append_log("GATEWAY_ADVERTISE", advertised=bool(ok))
+            if not self._running:
+                self.discovery.stop()
+        except Exception as exc:
+            self._append_log("GATEWAY_ADVERTISE_FAILED", error=str(exc))

@@ -11,14 +11,20 @@ FEATURE_METADATA = {
     "active": True
 }
 
-import requests
-import matplotlib
-matplotlib.use('Agg') # Use 'Agg' backend for non-interactive plotting
-import matplotlib.pyplot as plt
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+except Exception:  # matplotlib is an optional chart extra on Android/Termux
+    matplotlib = None
+    plt = None
 import os
 import json
 
 def execute(**kwargs):
+    if plt is None:
+        return {"error": "Chart rendering needs matplotlib, which is not installed on this device. "
+                          "Desktop: pip install matplotlib — Termux: pkg install python-matplotlib."}
     """
     Fetches the International Space Station's live coordinates (latitude, longitude),
     altitude, and speed, then renders a dark-mode map showing its current position.

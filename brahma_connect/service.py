@@ -48,6 +48,31 @@ class BrahmaConnectService:
             self._loop
         )
 
+    def broadcast_event(self, payload: dict) -> bool:
+        """Send an ``event`` message to every connected companion device."""
+        from .gateway.protocol import ProtocolTypes, build_message
+        if not self._loop:
+            return False
+        msg = build_message(ProtocolTypes.EVENT, payload or {})
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.gateway.hub.broadcast_chat_message(msg),
+                self._loop
+            )
+            return True
+        except Exception:
+            return False
+
+    def broadcast_chat(self, payload: dict) -> bool:
+        """Send a ``chat_message`` payload (role/text) to every device."""
+        if not self._loop:
+            return False
+        try:
+            self.broadcast_chat_message(payload or {})
+            return True
+        except Exception:
+            return False
+
     def start_background(self) -> None:
         if self._thread and self._thread.is_alive():
             return

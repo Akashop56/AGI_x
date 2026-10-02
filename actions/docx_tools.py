@@ -65,7 +65,7 @@ def _get_api_key() -> str:
 
 
 def _gemini_client():
-    import google.generativeai as genai
+    from core import llm_sdk as genai
 
     genai.configure(api_key=_get_api_key())
     return genai.GenerativeModel("gemini-2.5-flash")

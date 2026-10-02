@@ -1,4 +1,9 @@
-"""
+"""core/circuit_html.py — pure-python circuit schematic renderer.
+
+Extracted from the old Qt ``core/circuit_hud.py`` so the circuit_assembler skill
+keeps producing the same interactive HTML on Android, where the companion app
+renders it instead of a PyQt window.  No Qt, no display, no PC dependencies.
+
 Brahma AI Evo - Holographic Hardware Assembler & Interactive Circuit HUD.
 Compact, elegant in-app popup overlay that visually shows pin-to-pin wiring
 between microcontroller and sensors, matching the user's reference diagram.
@@ -13,26 +18,6 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-from PyQt6.QtCore import Qt, QUrl, pyqtSignal, QPoint
-from PyQt6.QtGui import QColor, QFont, QKeySequence, QShortcut
-from PyQt6.QtWidgets import (
-    QApplication,
-    QDialog,
-    QFrame,
-    QGraphicsDropShadowEffect,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
-
-try:
-    from PyQt6.QtWebEngineWidgets import QWebEngineView
-    _WEBENGINE_OK = True
-except Exception:
-    _WEBENGINE_OK = False
 
 from core.user_paths import get_user_data_dir
 
@@ -432,116 +417,3 @@ def generate_circuit_html(circuit: Dict[str, Any]) -> str:
 # =============================================================================
 # IN-APP POPUP OVERLAY WIDGET (No separate window or taskbar item)
 # =============================================================================
-
-class CircuitPopupOverlay(QWidget):
-    """
-    Sleek, compact holographic circuit popup overlay that floats directly
-    inside the Brahma AI main window (not a separate OS window or application).
-    """
-    closed = pyqtSignal()
-
-    def __init__(self, circuit_data: Dict[str, Any], parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setObjectName("CircuitPopupOverlay")
-        self.setFixedSize(760, 380)
-
-        # Glassmorphism container
-        self._frame = QFrame(self)
-        self._frame.setObjectName("CircuitPopupFrame")
-        self._frame.setFixedSize(self.size())
-        # Neon accent border frame styling (pure hardware compositing without software blur readback)
-        self._frame.setStyleSheet("""
-            QFrame#CircuitPopupFrame {
-                background: rgba(7, 12, 24, 0.97);
-                border: 2px solid rgba(56, 189, 248, 0.55);
-                border-radius: 16px;
-            }
-        """)
-
-        frame_layout = QVBoxLayout(self._frame)
-        frame_layout.setContentsMargins(0, 0, 0, 0)
-        frame_layout.setSpacing(0)
-
-        # WebEngine View rendering the exact compact schematic
-        self._html_content = generate_circuit_html(circuit_data)
-        self._html_file = OUTPUT_DIR / "circuit_schematic.html"
-        try:
-            self._html_file.write_text(self._html_content, encoding="utf-8")
-        except Exception:
-            pass
-
-        if _WEBENGINE_OK:
-            self._web = QWebEngineView(self._frame)
-            self._web.setStyleSheet("background: transparent;")
-            self._web.setHtml(self._html_content, QUrl.fromLocalFile(str(self._html_file)))
-            frame_layout.addWidget(self._web, 1)
-        else:
-            fallback = QLabel(
-                f"<h3 style='color:white; margin:16px;'>{circuit_data.get('title')}</h3>"
-                f"<p style='color:#94a3b8; margin:16px;'>{circuit_data.get('description', '')}</p>",
-                self._frame
-            )
-            frame_layout.addWidget(fallback, 1)
-
-        # Elegant Floating Close Button on top right
-        self._close_btn = QPushButton("✕", self._frame)
-        self._close_btn.setFixedSize(28, 28)
-        self._close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._close_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(255, 255, 255, 0.06);
-                color: #94a3b8;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 14px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background: rgba(239, 68, 68, 0.25);
-                border-color: #ef4444;
-                color: #ffffff;
-            }
-        """)
-        self._close_btn.move(self.width() - 38, 12)
-        self._close_btn.clicked.connect(self._do_close)
-
-        # Escape key closes overlay
-        QShortcut(QKeySequence("Escape"), self, self._do_close)
-
-    def _do_close(self):
-        self.closed.emit()
-        self.hide()
-        self.deleteLater()
-
-
-def show_circuit_schematic(circuit_data: Dict[str, Any], parent=None) -> Optional[QWidget]:
-    """
-    Shows the compact circuit popup inside the Brahma main window.
-    """
-    app = QApplication.instance()
-    main_win = parent
-
-    if not main_win and app:
-        for w in app.topLevelWidgets():
-            if hasattr(w, "_apply_circuit_overlay"):
-                main_win = w
-                break
-
-    if main_win and hasattr(main_win, "_apply_circuit_overlay"):
-        main_win._apply_circuit_overlay(circuit_data)
-        return getattr(main_win, "_circuit_overlay", None)
-
-    # Fallback to standalone popup dialog if no main window found
-    dialog = QDialog(parent)
-    dialog.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.SubWindow)
-    dialog.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-    dialog.setFixedSize(760, 380)
-    lay = QVBoxLayout(dialog)
-    lay.setContentsMargins(0, 0, 0, 0)
-    overlay = CircuitPopupOverlay(circuit_data, parent=dialog)
-    overlay.closed.connect(dialog.close)
-    lay.addWidget(overlay)
-    dialog.show()
-    dialog.raise_()
-    return overlay

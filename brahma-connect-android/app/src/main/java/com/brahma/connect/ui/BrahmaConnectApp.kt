@@ -105,6 +105,7 @@ fun HolographicBackground() {
 fun BrahmaConnectApp(
     onRequestCameraPermission: () -> Unit,
     onRequestNotificationPermission: () -> Unit,
+    onRequestMicrophonePermission: () -> Unit,
     onStartService: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -130,10 +131,12 @@ fun BrahmaConnectApp(
 
     val cameraGranted = remember { ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED }
     val notificationsGranted = remember { Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED }
-    
+    val microphoneGranted = remember { ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED }
+
     val setupMissing = listOfNotNull(
         if (!cameraGranted) "Camera" else null,
         if (!notificationsGranted) "Notifications" else null,
+        if (!microphoneGranted) "Microphone" else null,
     )
 
     val navController = rememberNavController()
@@ -170,8 +173,10 @@ fun BrahmaConnectApp(
                     missingItems = setupMissing,
                     cameraGranted = cameraGranted,
                     notificationsGranted = notificationsGranted,
+                    microphoneGranted = microphoneGranted,
                     onRequestCameraPermission = onRequestCameraPermission,
                     onRequestNotificationPermission = onRequestNotificationPermission,
+                    onRequestMicrophonePermission = onRequestMicrophonePermission,
                     onContinue = { 
                         if (credential != null) navController.navigate("home") { popUpTo(0) }
                         else navController.navigate("welcome") { popUpTo(0) }
@@ -387,8 +392,10 @@ private fun StartupPermissionsScreen(
     missingItems: List<String>,
     cameraGranted: Boolean,
     notificationsGranted: Boolean,
+    microphoneGranted: Boolean,
     onRequestCameraPermission: () -> Unit,
     onRequestNotificationPermission: () -> Unit,
+    onRequestMicrophonePermission: () -> Unit,
     onContinue: () -> Unit,
 ) {
     Column(
@@ -405,6 +412,7 @@ private fun StartupPermissionsScreen(
                 Spacer(Modifier.height(10.dp))
                 PermissionRow("Camera", cameraGranted)
                 PermissionRow("Notifications", notificationsGranted)
+                PermissionRow("Microphone (Brahma's ears)", microphoneGranted)
             }
         }
         Spacer(Modifier.height(20.dp))
@@ -414,6 +422,10 @@ private fun StartupPermissionsScreen(
         }
         if (!notificationsGranted) {
             Button(onClick = onRequestNotificationPermission, modifier = Modifier.fillMaxWidth()) { Text("Allow Notifications") }
+            Spacer(Modifier.height(10.dp))
+        }
+        if (!microphoneGranted) {
+            Button(onClick = onRequestMicrophonePermission, modifier = Modifier.fillMaxWidth()) { Text("Allow Microphone") }
             Spacer(Modifier.height(10.dp))
         }
         Button(

@@ -29,6 +29,12 @@ object AgentStateStore {
     private val _chatHistory = MutableStateFlow<List<ChatMessage>>(emptyList())
     val chatHistory: StateFlow<List<ChatMessage>> = _chatHistory.asStateFlow()
 
+    private val _agentState = MutableStateFlow("IDLE")
+    val agentState: StateFlow<String> = _agentState.asStateFlow()
+
+    private val _speaking = MutableStateFlow(false)
+    val speaking: StateFlow<Boolean> = _speaking.asStateFlow()
+
     fun setConnectionState(state: ConnectionState) {
         _connectionState.value = state
     }
@@ -66,6 +72,14 @@ object AgentStateStore {
 
     fun setChatHistory(messages: List<ChatMessage>) {
         _chatHistory.value = messages
+    }
+
+    fun setAgentState(state: String) {
+        _agentState.value = state.ifBlank { "IDLE" }
+    }
+
+    fun setSpeaking(value: Boolean) {
+        _speaking.value = value
     }
 }
 

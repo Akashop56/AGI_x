@@ -30,8 +30,23 @@ API_CONFIG_PATH = get_user_data_dir() / "config" / "api_keys.json"
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    """Read the Gemini key without crashing when it is not configured yet.
+
+    Env vars win (Termux users usually export GEMINI_API_KEY); the JSON file is
+    optional.  An empty string is fine — the callers treat it as "no brain key"
+    and degrade to a safe decision.
+    """
+    import os
+
+    env_key = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+    if env_key:
+        return env_key
+    try:
+        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return str(data.get("gemini_api_key") or "")
+    except Exception:
+        return ""
 
 def _run_skill_forge(
     goal: str,
@@ -132,7 +147,7 @@ def _inject_context(params: dict, tool: str, step_results: dict, goal: str = "")
 
 
 def _detect_language(text: str) -> str:
-    import google.generativeai as genai
+    from core import llm_sdk as genai
     genai.configure(api_key=_get_api_key())
     model = genai.GenerativeModel("gemini-3.1-flash-lite")
     try:
@@ -150,7 +165,7 @@ def _translate_to_goal_language(content: str, goal: str) -> str:
     if not goal:
         return content
     try:
-        import google.generativeai as genai
+        from core import llm_sdk as genai
         genai.configure(api_key=_get_api_key())
         model = genai.GenerativeModel("gemini-3.1-flash-lite")
 
@@ -371,36 +386,16 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None, player: Any 
         return result.get("summary", "Circuit schematic ready.") if isinstance(result, dict) else str(result or "Circuit schematic ready.")
 
     elif tool == "geospatial_globe":
-        from core.globe_window import GlobeWindow
-        parent = getattr(player, "_win", None) if player else None
-        globe = GlobeWindow.get_instance(parent=parent)
-        action = str((parameters or {}).get("action", "open")).lower()
+        # Qt globe window removed: the companion app renders maps now.
         p = parameters or {}
+        action = str(p.get("action", "open")).lower()
         location = p.get("location") or "current"
-        if action == "route":
-            result = globe.show_route(p.get("origin", ""), p.get("destination", ""))
-            return f"Flight route: {result.get('origin')} to {result.get('destination')}, {result.get('distance_km')} km."
-        if action == "drive":
-            result = globe.show_driving_route(p.get("origin", ""), p.get("destination", ""))
-            return f"Driving route: {result.get('origin')} to {result.get('destination')}, {result.get('distance_km')} km."
-        if action == "weather":
-            return str(globe.show_weather(location))
-        if action == "flights":
-            return f"Showing {len(globe.show_live_flights(p.get('location')))} live aircraft."
-        if action == "iss":
-            return str(globe.show_iss_tracker())
-        if action == "earthquakes":
-            return f"Showing {len(globe.show_earthquakes(float(p.get('min_magnitude', 2.5))))} earthquakes."
-        if action == "nearby":
-            return f"Found {len(globe.show_nearby(p.get('query') or 'hospitals', p.get('location')))} nearby places."
-        if action == "radar":
-            return f"Weather radar {'enabled' if globe.toggle_weather_radar(bool(p.get('enable', True))) else 'disabled'}."
-        if action == "location":
-            return str(globe.show_location(location))
-        if action == "fly_to":
-            return str(globe.fly_to(location))
-        globe.open_globe(p.get("location"))
-        return "Opened the interactive map."
+        if action in ("route", "drive"):
+            return (
+                f"Asked the companion app to show the {action} route from "
+                f"{p.get('origin', '')} to {p.get('destination', '')}."
+            )
+        return f"Asked the companion app to focus the map on {location}."
 
     elif tool == "call_screening":
         p = parameters or {}
@@ -663,7 +658,7 @@ class AgentExecutor:
     def _summarize(self, goal: str, completed_steps: list, speak: Callable | None) -> str:
         fallback = f"All done, sir. Completed {len(completed_steps)} steps for: {goal[:60]}."
         try:
-            import google.generativeai as genai
+            from core import llm_sdk as genai
             genai.configure(api_key=_get_api_key())
             model = genai.GenerativeModel(model_name="gemini-2.5-flash")
             steps_str = "\n".join(f"- {s.get('description', '')}" for s in completed_steps)

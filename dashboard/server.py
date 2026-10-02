@@ -130,6 +130,12 @@ def _ensure_network_access(port: int) -> None:
     """
     import sys, subprocess, os, tempfile, threading
 
+    # ── Android / Termux ─────────────────────────────────────────────────────
+    # No firewall to open: the port is reachable on the LAN as soon as uvicorn
+    # binds 0.0.0.0. Keep this cheap and silent.
+    if os.environ.get("TERMUX_VERSION") or "com.termux" in os.environ.get("PREFIX", ""):
+        return
+
     # ── Windows ──────────────────────────────────────────────────────────────
     if sys.platform == "win32":
         import ctypes, time
@@ -578,6 +584,11 @@ class DashboardServer:
             tok = req.headers.get("authorization", "").removeprefix("Bearer ").strip()
             return bool(tok) and tok in self._tokens
 
+        @app.get("/health")
+        async def health():
+            """Unauthenticated liveness probe (used by the Android app / scripts)."""
+            return {"ok": True, "service": "brahma-dashboard", "ip": self._ip, "port": PORT}
+
         # serve CryptoJS from local cache, fallback to CDN redirect
         @app.get("/static/crypto.js")
         async def serve_crypto():
@@ -718,6 +729,50 @@ class DashboardServer:
                 if self._wake_callback:
                     self._wake_callback()
             return JSONResponse({"ok": True})
+
+        @app.get("/api/settings/status")
+        async def settings_status(req: Request):
+            """Authenticated: does the brain have a Gemini API key yet?"""
+            if not _auth(req):
+                return JSONResponse({"ok": False, "error": "Unauthorized."}, status_code=401)
+            key_path = get_user_data_dir() / "config" / "api_keys.json"
+            has_key = False
+            try:
+                import json as _json
+
+                has_key = bool((_json.loads(key_path.read_text(encoding="utf-8")).get("gemini_api_key") or "").strip())
+            except Exception:
+                pass
+            return {"ok": True, "has_api_key": has_key, "path": str(key_path)}
+
+        @app.post("/api/settings/api-key")
+        async def settings_api_key(req: Request):
+            """Authenticated: store the Gemini API key typed on the phone."""
+            if not _auth(req):
+                return JSONResponse({"ok": False, "error": "Unauthorized."}, status_code=401)
+            try:
+                body = await req.json()
+            except Exception:
+                body = {}
+            key = str((body or {}).get("api_key") or "").strip()
+            if not key:
+                return JSONResponse({"ok": False, "error": "api_key is required."}, status_code=400)
+            import json as _json
+
+            key_dir = get_user_data_dir() / "config"
+            key_dir.mkdir(parents=True, exist_ok=True)
+            key_path = key_dir / "api_keys.json"
+            data: dict = {}
+            try:
+                data = _json.loads(key_path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {}
+            except Exception:
+                data = {}
+            data["gemini_api_key"] = key
+            key_path.write_text(_json.dumps(data, indent=4), encoding="utf-8")
+            print("[Dashboard] Gemini API key updated from the phone dashboard.")
+            return {"ok": True}
 
         @app.post("/api/wake")
         async def wake_ep(req: Request):
@@ -911,5 +966,5 @@ class DashboardServer:
         )
 
         print(f"[Dashboard] http://{self._ip}:{PORT}")
-        print("[Dashboard] Press 'Mobile Connect' in Brahma UI to get the QR code.")
+        print("[Dashboard] Open this URL from the phone browser to pair.")
         await uvicorn.Server(cfg).serve()

@@ -10,11 +10,13 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import com.brahma.connect.audio.PhoneAudioEngine
 import com.brahma.connect.commands.DeviceCommandHandler
 import com.brahma.connect.core.AgentStateStore
 import com.brahma.connect.core.ConnectionState
 import com.brahma.connect.network.BrahmaWebSocketClient
 import com.brahma.connect.pairing.PairingStorage
+import org.json.JSONObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,12 +27,30 @@ class BrahmaConnectForegroundService : Service() {
     private val scope = CoroutineScope(Job() + Dispatchers.IO)
     private lateinit var storage: PairingStorage
     private lateinit var client: BrahmaWebSocketClient
+    private lateinit var audio: PhoneAudioEngine
     private var started = false
+    private var voiceStarted = false
 
     override fun onCreate() {
         super.onCreate()
         storage = PairingStorage(this)
         client = BrahmaWebSocketClient(this, storage, DeviceCommandHandler(this))
+        audio = PhoneAudioEngine(this, object : PhoneAudioEngine.Listener {
+            override fun onMicFrame(base64Pcm: String, sampleRate: Int) {
+                val payload = JSONObject()
+                    .put("kind", "audio_in")
+                    .put("format", "pcm16")
+                    .put("sample_rate", sampleRate)
+                    .put("channels", 1)
+                    .put("data", base64Pcm)
+                client.sendEvent(payload)
+            }
+
+            override fun onPlaybackStateChanged(playing: Boolean) {
+                AgentStateStore.setSpeaking(playing)
+            }
+        })
+        client.audioEngine = audio
         createNotificationChannel()
         try {
             val notification = buildNotification("Brahma Connect", "Starting connection")
@@ -47,8 +67,13 @@ class BrahmaConnectForegroundService : Service() {
             return
         }
         scope.launch {
-            AgentStateStore.connectionState.collect {
+            AgentStateStore.connectionState.collect { state ->
                 updateNotification()
+                if (state == ConnectionState.CONNECTED) {
+                    startVoiceIfPermitted()
+                } else if (state == ConnectionState.DISCONNECTED) {
+                    stopVoice()
+                }
             }
         }
     }
@@ -56,6 +81,7 @@ class BrahmaConnectForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                stopVoice()
                 client.disconnect()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -71,6 +97,43 @@ class BrahmaConnectForegroundService : Service() {
         }
         connectIfPossible()
         return START_STICKY
+    }
+
+    private fun startVoiceIfPermitted() {
+        if (voiceStarted) return
+        if (!audio.hasMicrophonePermission()) {
+            AgentStateStore.addLog("Grant microphone permission to enable voice.")
+            return
+        }
+        promoteToMicrophoneForeground()
+        voiceStarted = true
+        audio.start()
+    }
+
+    /**
+     * Android 14+ only allows microphone access from a foreground service whose
+     * declared type includes `microphone`, so re-announce the notification with
+     * both types once RECORD_AUDIO has actually been granted.
+     */
+    private fun promoteToMicrophoneForeground() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        try {
+            val notification = buildNotification("Brahma Connect", "Voice link active")
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+            )
+        } catch (t: Throwable) {
+            AgentStateStore.addLog("Microphone foreground type unavailable: ${t.message}")
+        }
+    }
+
+    private fun stopVoice() {
+        if (!voiceStarted) return
+        voiceStarted = false
+        audio.stop()
     }
 
     private fun connectIfPossible() {
@@ -116,6 +179,8 @@ class BrahmaConnectForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        stopVoice()
+        audio.release()
         client.disconnect()
         super.onDestroy()
     }

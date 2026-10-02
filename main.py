@@ -1,21 +1,13 @@
 from core.user_paths import get_user_data_dir
+from core import pc_compat
 import os
 
-# Hardware acceleration & WebGL flags for smooth 180fps+ rendering in Chromium
-os.environ.setdefault(
-    "QTWEBENGINE_CHROMIUM_FLAGS",
-    "--enable-gpu-rasterization --enable-zero-copy --ignore-gpu-blocklist --enable-accelerated-2d-canvas --enable-webgl --enable-webgl2-compute-context --disable-frame-rate-limit --disable-gpu-vsync --num-raster-threads=4 --use-angle=d3d11 --disable-gpu-driver-bug-workarounds"
-)
-
-try:
-    from PyQt6.QtCore import QCoreApplication, Qt
-    from PyQt6.QtGui import QSurfaceFormat
-    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
-    fmt = QSurfaceFormat.defaultFormat()
-    fmt.setSwapInterval(0)
-    QSurfaceFormat.setDefaultFormat(fmt)
-except Exception:
-    pass
+# Brahma runs headless on Android/Termux: no Qt, no display, no desktop-only
+# automation. The companion app is the body and UI.
+#
+# `pc_compat` must be imported before the action modules below so modules that
+# probe desktop hardware get a clean "unavailable" answer instead of an
+# ImportError while the process is starting.
 
 from core import undo as undo_stack
 from core import audio_devices
@@ -36,7 +28,6 @@ import sys
 import time
 import traceback
 import os
-import pyperclip
 from pathlib import Path
 
 try:
@@ -45,7 +36,9 @@ try:
 except Exception:
     pass
 
-import sounddevice as sd
+# Local audio hardware is optional: on Android the phone streams the mic and
+# plays Brahma's voice. Keep the import soft so the server always starts.
+sd = pc_compat.optional_import("sounddevice")
 from google import genai
 from google.genai import types
 from ui import BrahmaUI
@@ -117,7 +110,7 @@ def get_base_dir():
 BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = get_user_data_dir() / "config" / "api_keys.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
-STARTUP_LOG     = Path(os.environ.get("LOCALAPPDATA", str(BASE_DIR))) / "Brahma Evo" / "startup.log"
+STARTUP_LOG     = get_user_data_dir() / "logs" / "startup.log"
 LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 CHANNELS            = 1
 SEND_SAMPLE_RATE    = 16000
@@ -127,14 +120,40 @@ LIVE_CONNECT_TIMEOUT = 12
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    """Locate the Gemini key the same way the headless UI does."""
+    import os as _os
+    env_key = (_os.environ.get("GEMINI_API_KEY") or _os.environ.get("GOOGLE_API_KEY") or "").strip()
+    if env_key:
+        return env_key
+    for candidate in (API_CONFIG_PATH, BASE_DIR / "config" / "api_keys.json"):
+        try:
+            with open(candidate, "r", encoding="utf-8") as f:
+                key = (json.load(f).get("gemini_api_key") or "").strip()
+            if key:
+                return key
+        except Exception:
+            continue
+    raise RuntimeError(
+        "No Gemini API key configured. Use 'python main.py --set-key <KEY>', "
+        "set GEMINI_API_KEY, or add it from the phone dashboard."
+    )
 
 
 def _is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
+    """True when something is already listening on the port.
+
+    Binds instead of connecting so the check works on Android where a fresh
+    device may have nothing listening yet (and where connecting to 0.0.0.0 is
+    not meaningful).
+    """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(0.25)
-        return sock.connect_ex((host, port)) == 0
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.settimeout(0.5)
+        try:
+            sock.bind((host, port))
+            return False
+        except OSError:
+            return True
 
 
 def _startup_log(message: str) -> None:
@@ -144,76 +163,6 @@ def _startup_log(message: str) -> None:
             f.write(message + "\n")
     except Exception:
         pass
-
-
-def _ensure_desktop_shortcut() -> None:
-    if os.name != "nt":
-        return
-
-    marker_path = get_user_data_dir() / "config" / ".desktop_shortcut_created"
-    if marker_path.exists():
-        return
-
-    try:
-        import winreg
-        try:
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders")
-            desktop_raw, _ = winreg.QueryValueEx(key, "Desktop")
-            winreg.CloseKey(key)
-            desktop_dir = Path(os.path.expandvars(desktop_raw))
-        except Exception:
-            desktop_dir = Path(os.path.expanduser("~")) / "Desktop"
-            
-        desktop_dir.mkdir(parents=True, exist_ok=True)
-        shortcut_path = desktop_dir / "Brahma Evo.lnk"
-        script_path = BASE_DIR / "main.py"
-        icon_path = BASE_DIR / "assets" / "Brahma_Lite_Logo.ico"
-
-        if not icon_path.exists():
-            icon_path = None
-
-        python_exe = sys.executable
-        if not python_exe:
-            python_exe = shutil.which("python") or shutil.which("py") or "python"
-
-        shortcut_target = python_exe
-        shortcut_args = f'"{script_path}"'
-        if getattr(sys, "frozen", False):
-            shortcut_target = python_exe
-            shortcut_args = ""
-
-        powershell_exe = shutil.which("powershell.exe") or shutil.which("powershell")
-        if powershell_exe is None:
-            raise RuntimeError("PowerShell is not available")
-
-        def _ps_escape(value: str) -> str:
-            return value.replace("'", "''")
-
-        icon_value = str(icon_path) if icon_path and icon_path.exists() else ""
-        ps1_path = get_user_data_dir() / "config" / "create_desktop_shortcut.ps1"
-        ps1_script = "\n".join([
-            "$WshShell = New-Object -ComObject WScript.Shell",
-            f"$Shortcut = $WshShell.CreateShortcut('{_ps_escape(str(shortcut_path))}')",
-            f"$Shortcut.TargetPath = '{_ps_escape(shortcut_target)}'",
-            f"$Shortcut.Arguments = '{_ps_escape(shortcut_args)}'",
-            f"$Shortcut.WorkingDirectory = '{_ps_escape(str(BASE_DIR))}'",
-            "$Shortcut.WindowStyle = 1",
-            "$Shortcut.Description = 'Launch Brahma Evo'",
-            f"if ('{_ps_escape(icon_value)}') {{ $Shortcut.IconLocation = '{_ps_escape(icon_value)},0' }}",
-            "$Shortcut.Save()",
-        ])
-        ps1_path.write_text(ps1_script, encoding="utf-8")
-
-        subprocess.run(
-            [powershell_exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1_path)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        marker_path.write_text("created", encoding="utf-8")
-        _startup_log(f"desktop shortcut created at {shortcut_path}")
-    except Exception as exc:
-        _startup_log(f"desktop shortcut creation skipped: {exc}")
 
 
 def _load_system_prompt() -> str:
@@ -1973,8 +1922,11 @@ TOOL_DECLARATIONS = [
 
 class BrahmaLive:
 
-    def __init__(self, ui: BrahmaUI, dashboard=None, dashboard_started: bool = False, enable_dashboard: bool = True):
+    def __init__(self, ui: BrahmaUI, dashboard=None, dashboard_started: bool = False,
+                 enable_dashboard: bool = True, phone_body=None):
         self.ui             = ui
+        self.phone_body     = phone_body
+        self._phone_audio_active = False
         self._smart_home    = SmartHomeService()
         self.session        = None
         self.audio_in_queue = None
@@ -2126,6 +2078,57 @@ class BrahmaLive:
             self.ui.notify_phone_connected()
         except Exception:
             pass
+
+    # ── phone body: audio in / events from the companion app ────────────────
+
+    def _audio_mode(self) -> str:
+        """Resolve where microphone and speaker live for this session."""
+        mode = str(self.ui.get_app_setting("audio_mode", "auto") or "auto").lower()
+        phone_ready = self.phone_body is not None and getattr(self.phone_body, "has_device", False)
+        if mode in {"auto", ""}:
+            if phone_ready:
+                return "phone"
+            if sd is not None and pc_compat.is_desktop():
+                return "local"
+            return "phone" if phone_ready else "none"
+        if mode == "local" and sd is None:
+            return "phone" if phone_ready else "none"
+        return mode
+
+    def push_phone_audio(self, pcm: bytes, sample_rate: int = SEND_SAMPLE_RATE) -> None:
+        """Microphone frames arriving from the companion app."""
+        if not pcm or self.out_queue is None or self._loop is None:
+            return
+        if self.ui.muted and not getattr(self.ui, "_wakeword_listening", False):
+            return
+        self._phone_audio_active = True
+        self._reset_idle_activity()
+        try:
+            self._loop.call_soon_threadsafe(
+                self.out_queue.put_nowait,
+                {"data": bytes(pcm), "mime_type": "audio/pcm"},
+            )
+        except Exception as exc:
+            print(f"[Brahma Evo] phone audio error: {exc}")
+
+    def handle_phone_notification(self, payload: dict) -> None:
+        """Notifications / state pushed by the companion app (accessibility)."""
+        payload = payload or {}
+        kind = str(payload.get("kind") or "notification")
+        if kind == "screen_state":
+            app = payload.get("app") or payload.get("package") or ""
+            title = payload.get("title") or ""
+            if app or title:
+                self.ui.write_log(f"SYS: Phone screen — {app or 'app'} {('· ' + title) if title else ''}")
+            return
+        event = {
+            "app": payload.get("app") or payload.get("package") or "",
+            "title": payload.get("title") or "",
+            "text": payload.get("text") or "",
+            "kind": kind,
+        }
+        if event["app"] or event["text"]:
+            self._on_external_notification(event)
 
     def _on_text_command(self, text: str, source: str = "local"):
         self._reset_idle_activity()
@@ -3663,8 +3666,7 @@ class BrahmaLive:
             pass
 
         try:
-            from sound_manager import SoundManager
-            SoundManager.instance().play_listening_start()
+            self.ui.publish("sound", {"name": "listening_start"})
         except Exception:
             pass
 
@@ -4229,43 +4231,31 @@ class BrahmaLive:
                 )
                 result = r.get("summary", "Circuit schematic ready.") if isinstance(r, dict) else (r or "Circuit schematic ready.")
             elif name == "geospatial_globe":
-                from core.globe_window import GlobeWindow
-                globe = GlobeWindow.get_instance(parent=self.ui._win)
+                # The interactive globe was a Qt window. On Android the
+                # companion app owns the screen, so hand it a map intent and
+                # answer with something the brain can speak.
                 action = (args.get("action") or "open").lower().strip()
                 location = args.get("location") or "current"
+                try:
+                    self.ui.publish("open_map", {
+                        "action": action,
+                        "location": location,
+                        "origin": args.get("origin", ""),
+                        "destination": args.get("destination", ""),
+                    })
+                except Exception:
+                    pass
                 if action == "open":
-                    globe.open_globe(location if args.get("location") else None)
-                    result = "Opened the interactive Brahma map."
-                elif action == "route":
-                    r = await loop.run_in_executor(None, lambda: globe.show_route(args.get("origin", ""), args.get("destination", "")))
-                    result = f"Flight route: {r.get('origin')} to {r.get('destination')}, {r.get('distance_km')} km, about {r.get('flight_time')}."
-                elif action == "drive":
-                    r = await loop.run_in_executor(None, lambda: globe.show_driving_route(args.get("origin", ""), args.get("destination", "")))
-                    result = f"Driving route: {r.get('origin')} to {r.get('destination')}, {r.get('distance_km')} km, {r.get('duration_str')}."
-                elif action in ("location", "fly_to"):
-                    r = await loop.run_in_executor(None, lambda: globe.show_location(location) if action == "location" else globe.fly_to(location))
-                    result = f"Map focused on {r.get('location', location)}."
+                    result = f"Asked the companion app to open the map at {location}."
+                elif action in ("route", "drive"):
+                    result = (
+                        f"Asked the companion app to show the {action} route from "
+                        f"{args.get('origin', '')} to {args.get('destination', '')}."
+                    )
                 elif action == "weather":
-                    r = await loop.run_in_executor(None, lambda: globe.show_weather(location))
-                    result = f"Weather for {r.get('location')}: {r.get('weather')}."
-                elif action == "flights":
-                    r = await loop.run_in_executor(None, lambda: globe.show_live_flights(args.get("location")))
-                    result = f"Showing {len(r)} live aircraft on the map."
-                elif action == "iss":
-                    r = await loop.run_in_executor(None, globe.show_iss_tracker)
-                    result = f"ISS location: {r.get('lat')}, {r.get('lon')}; altitude {r.get('altitude_km')} km."
-                elif action == "earthquakes":
-                    r = await loop.run_in_executor(None, lambda: globe.show_earthquakes(float(args.get("min_magnitude", 2.5))))
-                    result = f"Showing {len(r)} recent earthquakes on the map."
-                elif action == "nearby":
-                    r = await loop.run_in_executor(None, lambda: globe.show_nearby(args.get("query") or "hospitals", args.get("location")))
-                    result = f"Found {len(r)} nearby places."
-                elif action == "radar":
-                    enabled = bool(args.get("enable", True))
-                    await loop.run_in_executor(None, lambda: globe.toggle_weather_radar(enabled))
-                    result = f"Weather radar {'enabled' if enabled else 'disabled'}."
+                    result = f"Asked the companion app to show weather for {location}."
                 else:
-                    result = f"Unsupported map action: {action}."
+                    result = f"Asked the companion app to focus the map on {location}."
             elif name == "call_screening":
                 action = (args.get("action") or "start").lower().strip()
                 from actions.call_assistant import hang_up_active_call, start_call_proxy, take_over_active_call
@@ -4547,7 +4537,27 @@ class BrahmaLive:
             await self.session.send_realtime_input(media=msg)
 
     async def _listen_audio(self):
-        print("[BRAHMA EVO] 🎤 Mic started")
+        """Microphone router: companion phone first, local hardware on desktop."""
+        print("[BRAHMA EVO] 🎤 Mic task started")
+        while True:
+            mode = self._audio_mode()
+            if mode == "local" and sd is not None:
+                try:
+                    await self._listen_audio_local()
+                except Exception as exc:
+                    print(f"[BRAHMA EVO] ❌ Mic: {exc}")
+                    await asyncio.sleep(2)
+                continue
+            if mode == "none":
+                self.ui.write_log(
+                    "SYS: No microphone available. Voice input is paused; "
+                    "text input and the companion app remain available."
+                )
+            # phone mode: frames arrive through PhoneBodyBridge.push_phone_audio
+            await asyncio.sleep(5)
+
+    async def _listen_audio_local(self):
+        print("[BRAHMA EVO] 🎤 Local mic started")
         loop = asyncio.get_event_loop()
         import numpy as np
 
@@ -4562,8 +4572,8 @@ class BrahmaLive:
                 "SYS: No usable microphone is available at the configured sample rate. "
                 "Voice input is paused; text and mobile remote remain available."
             )
-            while True:
-                await asyncio.sleep(60)
+            await asyncio.sleep(5)
+            return
 
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
@@ -4701,7 +4711,35 @@ class BrahmaLive:
             raise
 
     async def _play_audio(self):
-        print("[BRAHMA EVO] 🔊 Play started")
+        """Speaker router: stream Gemini voice to the phone, or play locally."""
+        print("[BRAHMA EVO] 🔊 Play task started")
+        while True:
+            mode = self._audio_mode()
+            if mode == "local" and sd is not None:
+                try:
+                    await self._play_audio_local()
+                except Exception as exc:
+                    print(f"[BRAHMA EVO] ❌ Play: {exc}")
+                    await asyncio.sleep(2)
+                continue
+            await self._play_audio_remote()
+
+    async def _play_audio_remote(self):
+        """Drain Gemini audio and hand it to the companion app."""
+        while True:
+            chunk = await self.audio_in_queue.get()
+            try:
+                import numpy as np
+                pcm = np.frombuffer(chunk, dtype=np.int16)
+                lvl = float(np.sqrt(np.mean(np.square(pcm, dtype=np.float32))))
+                self.ui.set_audio_level(min(1.0, lvl / 2500.0))
+            except Exception:
+                pass
+            if self.phone_body is not None:
+                self.phone_body.deliver_audio(chunk, RECEIVE_SAMPLE_RATE)
+
+    async def _play_audio_local(self):
+        print("[BRAHMA EVO] 🔊 Local playback started")
         loop = asyncio.get_event_loop()
         import numpy as np
 
@@ -4841,8 +4879,60 @@ class BrahmaLive:
             print("[BRAHMA EVO] 🔄 Reconnecting in 5s...")
             await asyncio.sleep(5)
 
+def _parse_cli_args(argv: list[str]) -> dict:
+    """Tiny flag parser — avoids an argparse import at brain startup time."""
+    args = {"set_key": None, "audio_mode": None, "skip_update": False, "version": False}
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token == "--set-key" and i + 1 < len(argv):
+            args["set_key"] = argv[i + 1]
+            i += 2
+            continue
+        if token.startswith("--set-key="):
+            args["set_key"] = token.split("=", 1)[1]
+            i += 1
+            continue
+        if token == "--audio-mode" and i + 1 < len(argv):
+            args["audio_mode"] = argv[i + 1].strip().lower()
+            i += 2
+            continue
+        if token.startswith("--audio-mode="):
+            args["audio_mode"] = token.split("=", 1)[1].strip().lower()
+            i += 1
+            continue
+        if token in {"--skip-update", "--no-update"}:
+            args["skip_update"] = True
+        elif token in {"--version", "-v"}:
+            args["version"] = True
+        i += 1
+    return args
+
+
+def _write_api_key(key: str) -> bool:
+    key = (key or "").strip()
+    if not key:
+        return False
+    CONFIG_DIR = get_user_data_dir() / "config"
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    path = CONFIG_DIR / "api_keys.json"
+    data: dict = {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    data["gemini_api_key"] = key
+    path.write_text(json.dumps(data, indent=4), encoding="utf-8")
+    print(f"[Brahma] Gemini API key saved to {path}")
+    return True
+
+
 def main():
     _startup_log("main entered")
+    cli = _parse_cli_args(list(sys.argv[1:]))
+    if cli["skip_update"]:
+        os.environ["BRAHMA_SKIP_UPDATE"] = "1"
+
     try:
         if update_from_github(BASE_DIR):
             _startup_log("updated from GitHub; restarting")
@@ -4850,18 +4940,28 @@ def main():
             return
     except Exception as exc:
         _startup_log(f"GitHub update skipped: {exc}")
-    _ensure_desktop_shortcut()
-    ui = BrahmaUI(str(BASE_DIR / "assets" / "Brahma_Lite_Logo.png"), show_immediately=True)
+
+    ui = BrahmaUI(str(BASE_DIR / "assets" / "Brahma_Lite_Logo.png"))
+    if cli["audio_mode"]:
+        ui.set_app_setting("audio_mode", cli["audio_mode"])
+    _startup_log(f"headless ui ready (platform={pc_compat.platform_tag()})")
+    ui.write_log(f"SYS: Brahma Evo headless starting on {pc_compat.platform_tag()}.")
+
+    # ── dashboard (port 8000) ────────────────────────────────────────────────
     dashboard = None
-    dashboard_enabled = DashboardServer is not None and not _is_port_in_use(8000)
-    if DashboardServer is not None and not dashboard_enabled:
-        _startup_log("dashboard disabled: port 8000 already in use")
+    dashboard_enabled = False
+    if DashboardServer is None:
+        ui.write_log("SYS: Dashboard disabled — fastapi/uvicorn are not installed.")
+    elif _is_port_in_use(8000, "127.0.0.1"):
+        ui.write_log("SYS: Mobile Connect is already running in another Brahma Evo instance.")
+    else:
         try:
-            ui.write_log("SYS: Mobile Connect is already running in another Brahma Evo instance.")
-        except Exception:
-            pass
-    if dashboard_enabled:
-        dashboard = DashboardServer()
+            dashboard = DashboardServer()
+            dashboard_enabled = True
+        except Exception as exc:
+            dashboard = None
+            _startup_log(f"dashboard init failed: {exc}")
+            ui.write_log(f"ERR: Mobile Connect dashboard unavailable: {exc}")
 
     if dashboard is not None:
         def _start_dashboard_server():
@@ -4875,9 +4975,10 @@ def main():
                 except Exception:
                     pass
 
-        threading.Thread(target=_start_dashboard_server, daemon=True).start()
+        threading.Thread(target=_start_dashboard_server, daemon=True, name="brahma-dashboard").start()
         _startup_log("dashboard thread spawned")
 
+    # ── Brahma Connect gateway (port 8765) — the phone's door in ─────────────
     brahma_connect = None
     brahma_connect_enabled = False
     if get_brahma_connect_service is not None:
@@ -4886,24 +4987,33 @@ def main():
             brahma_connect_enabled = bool(brahma_connect.gateway.config.enabled)
         except Exception as exc:
             _startup_log(f"brahma connect init failed: {exc}")
-            try:
-                ui.write_log(f"ERR: Brahma Connect failed to initialize: {exc}")
-            except Exception:
-                pass
+            ui.write_log(f"ERR: Brahma Connect failed to initialize: {exc}")
             brahma_connect = None
-    try:
-        if brahma_connect is not None and hasattr(ui, "set_brahma_connect_service"):
+
+    if brahma_connect is not None:
+        try:
             ui.set_brahma_connect_service(brahma_connect)
-    except Exception:
-        pass
+        except Exception:
+            pass
+
+    phone_body = None
+    if brahma_connect is not None:
+        try:
+            from core.phone_body import PhoneBodyBridge, attach_bridge
+
+            phone_body = PhoneBodyBridge(ui, enabled=bool(ui.get_app_setting("phone_voice_enabled", True)))
+            attach_bridge(brahma_connect, phone_body)
+            phone_body.attach(brahma_connect)
+        except Exception as exc:
+            _startup_log(f"phone body init failed: {exc}")
+            ui.write_log(f"ERR: Phone body bridge failed to initialize: {exc}")
+            phone_body = None
+
     if brahma_connect is not None and brahma_connect_enabled:
         connect_port = int(getattr(brahma_connect.gateway.config, "port", 8765))
         if _is_port_in_use(connect_port):
             _startup_log(f"brahma connect disabled: port {connect_port} already in use")
-            try:
-                ui.write_log(f"SYS: Brahma Connect is already running on port {connect_port}.")
-            except Exception:
-                pass
+            ui.write_log(f"SYS: Brahma Connect is already running on port {connect_port}.")
         else:
             def _start_brahma_connect_server():
                 try:
@@ -4917,25 +5027,13 @@ def main():
                     except Exception:
                         pass
 
-            threading.Thread(target=_start_brahma_connect_server, daemon=True).start()
-
-
+            threading.Thread(target=_start_brahma_connect_server, daemon=True, name="brahma-gateway").start()
+            ui.write_log(f"SYS: Brahma Connect gateway starting on 0.0.0.0:{connect_port}.")
 
     ui.show_main()
-    _startup_log("ui shown")
+    _startup_log("headless ui ready")
 
-    try:
-        from core.globe_window import GlobeWindow
-        GlobeWindow.get_instance(parent=None)
-        _startup_log("globe window initialized")
-    except Exception as exc:
-        _startup_log(f"globe window initialization failed: {exc}")
-        try:
-            ui.write_log(f"ERR: Globe window initialization failed: {exc}")
-        except Exception:
-            pass
-
-    # Initialize plugin manager and load any plugins from ./plugins
+    # ── plugins ─────────────────────────────────────────────────────────────
     try:
         plugin_manager = PluginManager(BASE_DIR)
         plugin_manager.load_plugins()
@@ -4951,12 +5049,12 @@ def main():
             dashboard=dashboard,
             dashboard_started=dashboard is not None,
             enable_dashboard=dashboard_enabled,
+            phone_body=phone_body,
         )
         try:
             if plugin_manager is not None:
                 brahma_evo.plugin_manager = plugin_manager
                 plugin_manager.register_brahma(brahma_evo)
-                # allow plugins to run a startup hook
                 try:
                     plugin_manager.dispatch("on_startup", brahma_evo)
                 except Exception:
@@ -4964,8 +5062,11 @@ def main():
         except Exception:
             pass
 
-        print(f"DEBUG: start_ig_daemon is {start_ig_daemon}")
-        
+        if phone_body is not None:
+            phone_body.set_audio_in_handler(brahma_evo.push_phone_audio)
+            phone_body.set_barge_in_handler(brahma_evo.trigger_barge_in)
+            phone_body.set_notification_handler(brahma_evo.handle_phone_notification)
+
         if start_ig_daemon:
             try:
                 from actions.instagram_mcp import set_ig_prompt_callback
@@ -4989,9 +5090,12 @@ def main():
                     ui.write_log(f"Brahma Evo: {msg}")
                     brahma_evo.speak(msg)
                     return None
-                
+
             set_ig_prompt_callback(_ig_handler)
-            start_ig_daemon()
+            try:
+                start_ig_daemon()
+            except Exception as exc:
+                print(f"[Brahma Evo] Instagram daemon notice: {exc}")
 
         # Background Email Watcher
         try:
@@ -5017,26 +5121,23 @@ def main():
             print(f"[Brahma Evo] Email daemon initialization notice: {e}")
 
         def _clipboard_monitor():
-            try:
-                last_clip = pyperclip.paste()
-            except Exception:
-                last_clip = ""
-                
+            last_clip = pc_compat.clipboard_get()
             while True:
-                time.sleep(1.0)
+                time.sleep(1.5)
                 try:
-                    curr_clip = pyperclip.paste()
-                    if curr_clip != last_clip:
+                    curr_clip = pc_compat.clipboard_get()
+                    if curr_clip and curr_clip != last_clip:
                         last_clip = curr_clip
-                        text = (curr_clip or "").strip()
-                        if text and len(text) > 3:
+                        text = curr_clip.strip()
+                        if len(text) > 3:
                             reply = _clipboard_gemini_reply(text[:1000])
                             ui.write_log(f"Brahma Evo (Clipboard): {reply}")
                             brahma_evo.speak(reply)
                 except Exception:
                     pass
 
-        threading.Thread(target=_clipboard_monitor, daemon=True, name="clipboard-monitor").start()
+        if pc_compat.clipboard_get():
+            threading.Thread(target=_clipboard_monitor, daemon=True, name="clipboard-monitor").start()
 
         try:
             asyncio.run(brahma_evo.run())
@@ -5044,10 +5145,27 @@ def main():
             print("\n🔴 Shutting down...")
 
     def start_runner():
-        threading.Thread(target=runner, daemon=True).start()
+        threading.Thread(target=runner, daemon=True, name="brahma-brain").start()
 
     start_runner()
-    ui.show_main()
+
+    def _shutdown(*_args):
+        try:
+            ui.write_log("SYS: Shutting down Brahma Evo.")
+            ui.stop()
+            if brahma_connect is not None:
+                brahma_connect.stop()
+        except Exception:
+            pass
+        sys.exit(0)
+
+    for _sig in ("SIGINT", "SIGTERM"):
+        try:
+            import signal as _signal
+            _signal.signal(getattr(_signal, _sig), _shutdown)
+        except Exception:
+            pass
+
     ui.root.mainloop()
 
 
@@ -5056,7 +5174,7 @@ if __name__ == "__main__":
     import os
     import traceback
 
-    # Intercept subprocess calls when running as PyInstaller .exe
+    # Intercept subprocess calls when running as a frozen executable
     if len(sys.argv) >= 2:
         if sys.argv[1].endswith(".py") and os.path.exists(sys.argv[1]):
             # AgentExecutor is trying to run a dynamic script
@@ -5077,9 +5195,19 @@ if __name__ == "__main__":
                 print("pip is not available in the compiled executable.")
                 sys.exit(1)
 
+    cli = _parse_cli_args(list(sys.argv[1:]))
+    if cli["version"]:
+        try:
+            print((BASE_DIR / "version.txt").read_text(encoding="utf-8").strip())
+        except Exception:
+            print("Brahma Evo (headless)")
+        sys.exit(0)
+    if cli["set_key"]:
+        sys.exit(0 if _write_api_key(cli["set_key"]) else 1)
+
     try:
         main()
     except Exception as e:
-        with open("FATAL_CRASH.log", "w") as f:
+        with open(get_user_data_dir() / "FATAL_CRASH.log", "w") as f:
             traceback.print_exc(file=f)
         raise

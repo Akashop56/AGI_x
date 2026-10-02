@@ -31,6 +31,9 @@ class UnifiedAIClient:
             self._provider = data.get("default_ai_provider", "OpenRouter")
             self._local_url = data.get("local_ai_url", "http://localhost:11434/v1").rstrip("/")
             self._local_model = data.get("local_ai_model", "llama3.2")
+        except FileNotFoundError:
+            # Fresh install (common on Termux): defaults are fine.
+            logger.debug("[LLM Client] No settings file yet; using defaults.")
         except Exception as e:
             logger.error(f"[LLM Client] Failed to load settings: {e}")
 

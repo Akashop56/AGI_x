@@ -18,7 +18,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-import cv2
+from core import pc_compat
+cv2 = pc_compat.optional_import("cv2")
 import numpy as np
 
 logger = logging.getLogger("calorie_counter")
@@ -236,6 +237,11 @@ def _save_nutrition_log(entry: dict) -> None:
 
 def run(parameters: dict, player=None, speak=None, session_memory=None) -> str:
     """Main execution function for Brahma AI Calorie Counter."""
+    if cv2 is None:
+        return pc_compat.unavailable(
+            "Camera based nutrition scanning",
+            detail="The companion app can attach a photo instead.",
+        )
     query = (parameters.get("query") or "").strip()
     image_path = parameters.get("image_path")
     use_camera = parameters.get("use_camera")

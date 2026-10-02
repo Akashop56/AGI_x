@@ -12,9 +12,12 @@ import wave
 from pathlib import Path
 from typing import Callable
 
-import mss
-import mss.tools
-import sounddevice as sd
+from core import pc_compat
+
+# Screen + audio capture are desktop-only; the meeting assistant stays
+# importable on Android and reports the limitation at call time.
+mss = pc_compat.optional_import("mss")
+sd = pc_compat.optional_import("sounddevice")
 from google import genai
 from google.genai import types
 
@@ -50,6 +53,8 @@ def _get_api_key() -> str:
 
 
 def _capture_screen() -> bytes:
+    if mss is None:
+        raise RuntimeError(pc_compat.unavailable("Desktop screen capture"))
     with mss.mss() as sct:
         shot = sct.grab(sct.monitors[1])
         png_bytes = mss.tools.to_png(shot.rgb, shot.size)
@@ -91,6 +96,8 @@ def _wav_bytes(pcm_bytes: bytes, channels: int, sample_rate: int) -> bytes:
 
 
 def _audio_input_source() -> dict:
+    if sd is None:
+        return {}
     try:
         devices = sd.query_devices()
     except Exception:
@@ -262,7 +269,9 @@ class MeetingAssistant:
         extra = None
         if loopback:
             try:
-                extra = sd.WasapiSettings(loopback=True)
+                extra = None
+                if hasattr(sd, "WasapiSettings"):
+                    extra = sd.WasapiSettings(loopback=True)
             except Exception:
                 extra = None
 
@@ -280,6 +289,8 @@ class MeetingAssistant:
                 pass
 
         try:
+            if sd is None:
+                raise RuntimeError(pc_compat.unavailable("Local microphone capture"))
             with sd.InputStream(
                 device=device,
                 samplerate=samplerate,
