@@ -5,12 +5,19 @@ import json
 import time
 import subprocess
 import threading
-import winreg
 from pathlib import Path
+
+from core import pc_compat
+
+# Steam/Epic discovery uses the Windows registry; elsewhere it is a no-op that
+# lets the action answer cleanly instead of crashing at import.
+winreg = pc_compat.optional_import("winreg")
 from datetime import datetime
 
 
 def _find_steam_path() -> Path | None:
+    if winreg is None:
+        return None
     registry_keys = [
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam"),
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam"),
@@ -715,6 +722,8 @@ def _get_schedule_status() -> str:
 
 
 def game_updater(parameters: dict, player=None, speak=None) -> str:
+    if winreg is None:
+        return pc_compat.unavailable("PC game launcher control")
     p         = parameters or {}
     action    = p.get("action",    "update").lower().strip()
     platform  = p.get("platform",  "both").lower().strip()

@@ -51,8 +51,23 @@ Return ONLY valid JSON:
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    """Read the Gemini key without crashing when it is not configured yet.
+
+    Env vars win (Termux users usually export GEMINI_API_KEY); the JSON file is
+    optional.  An empty string is fine — the callers treat it as "no brain key"
+    and degrade to a safe decision.
+    """
+    import os
+
+    env_key = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+    if env_key:
+        return env_key
+    try:
+        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return str(data.get("gemini_api_key") or "")
+    except Exception:
+        return ""
 
 
 def analyze_error(
@@ -82,7 +97,7 @@ def analyze_error(
     import warnings
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=FutureWarning)
-        import google.generativeai as genai
+        from core import llm_sdk as genai
 
     if attempt >= max_attempts:
         print(f"[ErrorHandler] ⚠️ Max attempts reached for step {step.get('step')} — forcing replan")
@@ -155,7 +170,7 @@ def generate_fix(step: dict, error: str, fix_suggestion: str) -> dict:
     import warnings
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=FutureWarning)
-        import google.generativeai as genai
+        from core import llm_sdk as genai
 
     genai.configure(api_key=_get_api_key())
     model = genai.GenerativeModel(model_name="gemini-2.5-flash")

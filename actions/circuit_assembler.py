@@ -484,18 +484,8 @@ def circuit_assembler(
         elif player and hasattr(player, "_win") and hasattr(player._win, "_circuit_hud_sig"):
             player._win._circuit_hud_sig.emit(circuit_data)
             dispatched = True
-        else:
-            from PyQt6.QtWidgets import QApplication
-            app = QApplication.instance()
-            if app:
-                for w in app.topLevelWidgets():
-                    if hasattr(w, "_circuit_hud_sig"):
-                        w._circuit_hud_sig.emit(circuit_data)
-                        dispatched = True
-                        break
         if not dispatched:
-            from core.circuit_hud import show_circuit_schematic
-            show_circuit_schematic(circuit_data)
+            logger.info("[CircuitAssembler] Schematic rendered as an event for the companion app.")
     except Exception as e:
         logger.error(f"[CircuitAssembler] Failed to display Circuit HUD: {e}")
 
@@ -511,7 +501,7 @@ def circuit_assembler(
         summary_lines.append(f"⚠️ Safety Note: {circuit_data['warnings'][0]}")
 
     # Build deliverable HTML file
-    from core.circuit_hud import OUTPUT_DIR, generate_circuit_html
+    from core.circuit_html import OUTPUT_DIR, generate_circuit_html
     html_file = OUTPUT_DIR / "circuit_schematic.html"
     try:
         html_file.write_text(generate_circuit_html(circuit_data), encoding="utf-8")

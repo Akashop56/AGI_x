@@ -25,7 +25,11 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 
-import google.generativeai as genai
+from core import llm_sdk as genai
+
+
+def _require_genai():
+    return genai
 
 
 def _get_api_key() -> str:
@@ -35,8 +39,9 @@ def _get_api_key() -> str:
 
 
 def _gemini_client():
-    genai.configure(api_key=_get_api_key())
-    return genai.GenerativeModel("gemini-2.5-flash")
+    sdk = _require_genai()
+    sdk.configure(api_key=_get_api_key())
+    return sdk.GenerativeModel("gemini-2.5-flash")
 
 
 def _detect_type(path: Path) -> str:

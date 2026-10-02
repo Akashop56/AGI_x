@@ -22,6 +22,14 @@ class MainActivity : ComponentActivity() {
         // The UI will react by showing the scanner if permission is granted.
     }
 
+    private val microphonePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            AgentStateStore.addLog("Microphone permission granted.")
+        } else {
+            AgentStateStore.addLog("Voice input disabled (microphone permission denied).")
+        }
+    }
+
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             if (pendingServiceStart) {
@@ -51,6 +59,7 @@ class MainActivity : ComponentActivity() {
         }
         maybeStartService()
         ensureCameraPermission()
+        ensureMicrophonePermission()
         setContent {
             BrahmaConnectTheme {
                 BrahmaConnectApp(
@@ -59,6 +68,9 @@ class MainActivity : ComponentActivity() {
                     },
                     onRequestNotificationPermission = {
                         notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    },
+                    onRequestMicrophonePermission = {
+                        microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
                     },
                     onStartService = { maybeStartService() },
                 )
@@ -83,6 +95,12 @@ class MainActivity : ComponentActivity() {
     private fun ensureCameraPermission() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             cameraPermission.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun ensureMicrophonePermission() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 

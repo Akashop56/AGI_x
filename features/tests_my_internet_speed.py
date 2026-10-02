@@ -11,10 +11,18 @@ FEATURE_METADATA = {
     "active": True
 }
 
-import speedtest
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+try:
+    import speedtest
+except Exception:  # speedtest-cli is optional; a benchmark fallback follows
+    speedtest = None
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+except Exception:  # optional chart extra
+    matplotlib = None
+    plt = None
+import time
 import os
 import urllib.request
 import json
@@ -22,6 +30,8 @@ from typing import Dict, Any
 
 def execute(**kwargs) -> Dict[str, Any]:
     """Tests internet download and upload speed and latency, and generates a visual speed gauge card on screen."""
+    if plt is None:
+        return {"error": "Chart rendering needs matplotlib; install it with pip install matplotlib."}
     try:
         st = speedtest.Speedtest()
         st.get_best_server()

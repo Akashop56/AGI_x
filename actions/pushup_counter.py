@@ -20,7 +20,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-import cv2
+from core import pc_compat
+cv2 = pc_compat.optional_import("cv2")
 import numpy as np
 
 logger = logging.getLogger("pushup_counter")
@@ -287,6 +288,11 @@ def _record_session(exercise: str, reps: int, seconds: float, calories: float) -
 
 def run(parameters: dict, player=None, speak=None, session_memory=None) -> str:
     """Main execution function for Brahma Workout Tracker."""
+    if cv2 is None:
+        return pc_compat.unavailable(
+            "Camera based workout tracking",
+            detail="The companion app streams camera frames on Android.",
+        )
     query = (parameters.get("query") or "").strip()
     q_lower = query.lower()
 

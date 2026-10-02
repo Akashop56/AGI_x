@@ -406,7 +406,7 @@ def synthesize_deep_report(goal_or_topic: str, title: str, research_notes: str =
     if not api_key:
         return ""
 
-    import google.generativeai as genai
+    from core import llm_sdk as genai
     genai.configure(api_key=api_key)
 
     model_names = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-flash-latest"]

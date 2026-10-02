@@ -11,6 +11,7 @@ import com.brahma.connect.core.DeviceCredential
 import com.brahma.connect.core.DeviceSnapshot
 import com.brahma.connect.core.GatewayEndpoint
 import com.brahma.connect.core.PairingOffer
+import com.brahma.connect.audio.PhoneAudioEngine
 import com.brahma.connect.pairing.PairingStorage
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -27,6 +28,10 @@ class BrahmaWebSocketClient(
     private val storage: PairingStorage,
     private val commandHandler: DeviceCommandHandler,
 ) {
+    /** Registered by the foreground service once the user granted RECORD_AUDIO. */
+    var audioEngine: PhoneAudioEngine? = null
+    /** Optional UI bridge (used to surface headless UI events in the app). */
+    var onUiEvent: ((String, JSONObject) -> Unit)? = null
     private val client = OkHttpClient.Builder()
         .retryOnConnectionFailure(true)
         .pingInterval(30, TimeUnit.SECONDS)
@@ -66,6 +71,7 @@ class BrahmaWebSocketClient(
 
     fun disconnect() {
         manualDisconnect = true
+        audioEngine?.stop()
         socket?.close(1000, "Disconnected by user")
         socket = null
         AgentStateStore.setConnectionState(ConnectionState.DISCONNECTED)
@@ -123,6 +129,12 @@ class BrahmaWebSocketClient(
                 "apps",
                 "open_url",
                 "wifi_state",
+                // Headless-brain body features: mic streaming, voice playback,
+                // notification mirroring and screen sharing (see PhoneAudioEngine).
+                "audio_in",
+                "audio_out",
+                "notifications",
+                "screen_state",
             ),
         )
     }
@@ -240,6 +252,7 @@ class BrahmaWebSocketClient(
                         val msg = ChatMessage(msgId, role, text, timestamp, "Sent")
                         AgentStateStore.addChatMessage(msg)
                     }
+                    BrahmaProtocol.EVENT -> handleEvent(root)
                 }
             }.onFailure {
                 AgentStateStore.setError(it.message)
@@ -267,7 +280,62 @@ class BrahmaWebSocketClient(
         }
     }
 
+    private fun handleEvent(root: JSONObject) {
+        val payload = root.optJSONObject("payload") ?: return
+        when (payload.optString("kind")) {
+            "audio_out" -> {
+                val data = payload.optString("data", "")
+                if (data.isNotEmpty()) {
+                    audioEngine?.enqueueAudio(data)
+                } else {
+                    audioEngine?.speak(payload.optString("text", ""))
+                }
+            }
+            "speak" -> audioEngine?.speak(payload.optString("text", ""))
+            "ui_event" -> {
+                val name = payload.optString("name", "")
+                val data = payload.optJSONObject("data") ?: JSONObject()
+                when (name) {
+                    "state" -> AgentStateStore.setAgentState(data.optString("state", "IDLE"))
+                    "scanning" -> {
+                        if (data.optBoolean("enabled", false)) {
+                            AgentStateStore.setStatus(data.optString("text", "Scanning"))
+                        }
+                    }
+                    "attention" -> {
+                        val app = data.optString("app")
+                        val title = data.optString("title")
+                        AgentStateStore.addLog("Attention: $app $title".trim())
+                    }
+                    "phone_connected" -> AgentStateStore.setStatus("Connected")
+                }
+                onUiEvent?.invoke(name, data)
+                if (name.isNotBlank()) AgentStateStore.addLog("Brahma UI: $name")
+            }
+            "screen_request" -> respondScreenFrame(payload.optString("request_id", ""))
+        }
+    }
+
+    /**
+     * The headless brain can ask for a screenshot. MediaProjection capture needs
+     * an explicit user grant, so answer immediately (empty frame) instead of
+     * letting the gateway wait for its timeout.
+     */
+    private fun respondScreenFrame(requestId: String) {
+        val payload = JSONObject()
+            .put("kind", "screen_frame")
+            .put("request_id", requestId)
+            .put("mime", "image/jpeg")
+            .put("data", "")
+        send(BrahmaProtocol.envelope(BrahmaProtocol.EVENT, payload))
+    }
+
+    fun sendEvent(payload: JSONObject) {
+        send(BrahmaProtocol.envelope(BrahmaProtocol.EVENT, payload))
+    }
+
     fun sendChatMessage(text: String) {
+        audioEngine?.bargeIn()
         val payload = BrahmaProtocol.chatMessage(text)
         val msgId = payload.getString("request_id")
         val timestamp = System.currentTimeMillis()

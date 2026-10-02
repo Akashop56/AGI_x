@@ -2,8 +2,10 @@
 
 Brahma Connect is the local multi-device transport layer for Brahma AI.
 
-It keeps the AI brain inside the existing Brahma desktop app and adds a
-gateway that can pair with companion devices on the local network.
+It keeps the AI brain inside the existing Brahma process and adds a gateway
+that can pair with companion devices on the local network. The brain can run
+headless on Android/Termux (see `TERMUX.md`) with the companion app acting as
+its body and UI.
 
 ## Included foundation
 

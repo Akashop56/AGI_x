@@ -1,3 +1,4 @@
+from __future__ import annotations
 from core.user_paths import get_user_data_dir
 """
 actions/instagram_mcp.py

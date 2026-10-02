@@ -8,12 +8,18 @@ import os
 import sys
 import time
 import threading
-import cv2
-import mss
-import mss.tools
-import sounddevice as sd
 import numpy as np
 from pathlib import Path
+
+from core import pc_compat
+
+# Camera / screen capture need desktop frameworks. Keep the module importable
+# on Android so tool routing can answer with a helpful message instead of
+# crashing the whole brain at import time.
+cv2 = pc_compat.optional_import("cv2")
+mss = pc_compat.optional_import("mss")
+sd = pc_compat.optional_import("sounddevice")
+mss_tools = pc_compat.optional_import("mss.tools")
 
 try:
     import PIL.Image
@@ -119,6 +125,13 @@ def _to_jpeg(img_bytes: bytes) -> bytes:
 
 
 def _capture_screenshot() -> bytes:
+    if mss is None:
+        raise RuntimeError(
+            pc_compat.unavailable(
+                "Desktop screen capture",
+                detail="The companion app supplies screen frames on Android.",
+            )
+        )
     try:
         if _PIL_OK:
             from PIL import ImageGrab
@@ -141,13 +154,21 @@ def _capture_screenshot() -> bytes:
             else:
                 raise RuntimeError("No monitors were detected for screen capture.")
             shot = sct.grab(monitor)
-            png_bytes = mss.tools.to_png(shot.rgb, shot.size)
+            png_bytes = mss_tools.to_png(shot.rgb, shot.size)
         return _to_jpeg(png_bytes)
 
 
 def _capture_camera() -> bytes:
+    if cv2 is None:
+        raise RuntimeError(
+            pc_compat.unavailable(
+                "Direct camera capture",
+                detail="The companion app streams camera frames on Android.",
+            )
+        )
     camera_index = _get_camera_index()
-    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+    backend = getattr(cv2, "CAP_DSHOW", 0) if sys.platform == "win32" else 0
+    cap = cv2.VideoCapture(camera_index, backend)
     if not cap.isOpened():
         raise RuntimeError(f"Camera could not be opened: index {camera_index}")
     for _ in range(10):
@@ -300,6 +321,11 @@ class _LiveSession:
             await asyncio.sleep(0.3)
 
     async def _play_loop(self):
+        if sd is None:
+            # No local speaker (Android/Termux): the companion app plays audio.
+            while True:
+                await self._audio_in.get()
+            return
         stream = sd.RawOutputStream(
             samplerate=RECEIVE_SAMPLE_RATE,
             channels=CHANNELS,

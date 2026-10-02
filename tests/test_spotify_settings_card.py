@@ -43,6 +43,8 @@ def test_system_connectivity_page_spotify_card(tmp_path, monkeypatch):
     monkeypatch.setattr(spotify_module, "SPOTIFY_CONFIG_PATH", cfg_file)
 
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    pytest = __import__("pytest")
+    pytest.importorskip("PyQt6.QtWidgets", reason="desktop Qt front-end removed; headless build")
     from PyQt6.QtWidgets import QApplication, QLineEdit
     app = QApplication.instance() or QApplication([])
 

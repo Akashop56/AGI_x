@@ -15,11 +15,18 @@ import urllib.request
 import xml.etree.ElementTree as ET
 import os
 from datetime import datetime
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+except Exception:  # matplotlib is an optional chart extra on Android/Termux
+    matplotlib = None
+    plt = None
 
 def execute(**kwargs):
+    if plt is None:
+        return {"error": "Chart rendering needs matplotlib, which is not installed on this device. "
+                          "Desktop: pip install matplotlib — Termux: pkg install python-matplotlib."}
     query = (kwargs.get('query') or kwargs.get('match_id') or kwargs.get('team') or '').lower().strip()
     rss_url = "https://static.cricinfo.com/rss/livescores.xml"
 

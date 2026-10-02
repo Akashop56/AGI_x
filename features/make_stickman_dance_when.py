@@ -11,15 +11,23 @@ FEATURE_METADATA = {
     "active": True
 }
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.animation as animation
+except Exception:  # matplotlib is an optional chart extra on Android/Termux
+    matplotlib = None
+    plt = None
+    animation = None
 import numpy as np
 import os
 import time
 
 def execute(**kwargs):
+    if plt is None:
+        return {"error": "Chart rendering needs matplotlib, which is not installed on this device. "
+                          "Desktop: pip install matplotlib — Termux: pkg install python-matplotlib."}
     dance_style = kwargs.get('dance_style', 'disco')
     duration_seconds = kwargs.get('duration_seconds', 10)
 

@@ -1,0 +1,45 @@
+# Brahma Evo — desktop / power-user extras
+#
+# None of these are required for the headless Android server. Install them on a
+# PC (or on Termux when you really want the extra skills) with:
+#     pip install -r requirements-optional.txt
+#
+# Notes for Termux
+# ----------------
+# * Local audio needs PortAudio:   pkg install portaudio && pip install sounddevice
+# * OpenCV / mediapipe are heavy; camera skills are delegated to the phone app.
+# * Playwright needs a browser bundle (playwright install chromium) and is only
+#   useful on a desktop.
+
+# Local audio hardware (desktop voice; Android uses the phone instead)
+sounddevice
+
+# Desktop automation / clipboard (auto-disabled on Android by core/pc_compat.py)
+pyautogui
+pyperclip
+psutil
+mss
+pygetwindow
+pywinauto
+
+# Camera / vision skills
+opencv-python
+mediapipe
+
+# Browser automation
+playwright
+
+# Chat bridges
+discord.py
+instagrapi
+
+# Documents & data
+reportlab
+pandas
+pdfplumber
+PyPDF2
+pydub
+
+# Charts (feature skills)
+matplotlib
+speedtest-cli

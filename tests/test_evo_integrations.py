@@ -3,7 +3,7 @@ import json
 from actions import spotify_controller as spotify_module
 from actions.circuit_assembler import PRESET_ULTRASONIC_ARDUINO_UNO
 from actions.geospatial_globe import calculate_great_circle_route, geocode_location
-from core.circuit_hud import generate_circuit_html
+from core.circuit_html import generate_circuit_html
 
 
 def test_generated_skill_module_is_not_imported_during_registry_startup(tmp_path, monkeypatch):

@@ -1,0 +1,111 @@
+name: Build Android APK
+
+# Builds the Brahma Connect companion app (brahma-connect-android) and uploads
+# the debug APK as a workflow artifact.  Tag pushes (v*) and manual runs with
+# "publish_release" enabled also attach the APK to a GitHub Release.
+
+on:
+  push:
+    branches: [main, master, 'arena/**']
+    tags: ['v*']
+    paths:
+      - 'brahma-connect-android/**'
+      - '.github/workflows/build-apk.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'brahma-connect-android/**'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Attach the built APK to the latest-debug GitHub Release'
+        type: boolean
+        default: false
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  ANDROID_PROJECT_DIR: brahma-connect-android
+  GRADLE_OPTS: '-Dorg.gradle.jvmargs=-Xmx3g -XX:+HeapDumpOnOutOfMemoryError'
+
+jobs:
+  build:
+    name: Assemble debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Show project files
+        working-directory: ${{ env.ANDROID_PROJECT_DIR }}
+        run: |
+          ls -la
+          ls -la gradle/wrapper
+
+      - name: Make Gradle wrapper executable
+        working-directory: ${{ env.ANDROID_PROJECT_DIR }}
+        run: chmod +x gradlew
+
+      - name: Build debug APK
+        working-directory: ${{ env.ANDROID_PROJECT_DIR }}
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Verify APK exists
+        working-directory: ${{ env.ANDROID_PROJECT_DIR }}
+        run: |
+          ls -la app/build/outputs/apk/debug/
+          test -n "$(find app/build/outputs/apk/debug -name '*.apk' -print -quit)"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: brahma-connect-debug-apk
+          path: ${{ env.ANDROID_PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish APK to GitHub Release
+    needs: build
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.publish_release) ||
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download APK artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: brahma-connect-debug-apk
+          path: apk
+
+      - name: Publish latest-debug release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest-debug' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'Latest Debug Build' }}
+          files: apk/*.apk
+          generate_release_notes: true

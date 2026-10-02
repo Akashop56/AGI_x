@@ -39,7 +39,7 @@ def mobile_autopilot(parameters: dict, response=None, player=None, session_memor
         return json.dumps({"success": False, "error": "Missing instruction."})
 
     try:
-        import google.generativeai as genai
+        from core import llm_sdk as genai
         from agent.planner import _get_api_key
         genai.configure(api_key=_get_api_key())
         model = genai.GenerativeModel("gemini-3.1-flash-lite")

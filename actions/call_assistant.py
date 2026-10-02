@@ -23,7 +23,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-import sounddevice as sd
+from core import pc_compat
+sd = pc_compat.optional_import("sounddevice")
 import numpy as np
 
 try:
@@ -60,6 +61,8 @@ def _get_api_key() -> str:
 def _get_audio_loopback_device() -> dict:
     """Finds best input/loopback device to record caller's voice with maximum clarity."""
     try:
+        if sd is None:
+            return None
         devices = sd.query_devices()
     except Exception:
         return {}

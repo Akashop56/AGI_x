@@ -14,7 +14,10 @@ from typing import Any
 import warnings
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", category=FutureWarning)
-    import google.generativeai as genai
+    try:
+        from google import genai  # google-genai (the SDK the rest of the app uses)
+    except Exception:  # pragma: no cover - optional at runtime
+        genai = None
 
 
 def _base_dir() -> Path:
