@@ -1,16 +1,12 @@
 name: Android build (compile check)
 
-# Fast compile-only CI for the companion app.  Duplicate build errors are
-# surfaced as GitHub annotations so failures are readable from the PR page.
-# The APK-producing workflow lives in build-apk.yml.
+# Compile-only diagnostics for the companion app.  Build errors are surfaced as
+# GitHub annotations so a failing PR explains itself without digging into logs.
+# The APK-producing workflow (artifacts, release-ready build) lives in
+# build-apk.yml, which owns the push trigger so pushes build exactly once.
 
 on:
   pull_request:
-    paths:
-      - 'brahma-connect-android/**'
-      - '.github/workflows/android.yml'
-  push:
-    branches: [main, master, 'arena/**']
     paths:
       - 'brahma-connect-android/**'
       - '.github/workflows/android.yml'
