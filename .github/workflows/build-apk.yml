@@ -106,8 +106,19 @@ jobs:
               || fail "merged manifest is missing permission $perm"
           done
 
-          grep -q "PhoneAudioEngine" <(unzip -p "$APK" classes.dex | strings) \
-            || echo "::warning::PhoneAudioEngine class not found in classes.dex (audio bridge may not be linked)"
+          # Prove the phone-audio body is actually linked into the artifact.
+          APK="$APK" python3 - <<'PY'
+          import os, sys, zipfile
+
+          apk = os.environ["APK"]
+          needles = [b"PhoneAudioEngine", b"com/brahma/connect/audio"]
+          with zipfile.ZipFile(apk) as archive:
+              dex_names = [n for n in archive.namelist() if n.endswith(".dex")]
+              found = any(all(n in archive.read(name) for n in needles) for name in dex_names)
+          print(f"dex files: {dex_names}")
+          print("PhoneAudioEngine linked:", found)
+          sys.exit(0 if found else 1)
+          PY
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v7
