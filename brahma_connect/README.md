@@ -12,6 +12,7 @@ its body and UI.
 - FastAPI and WebSocket gateway scaffold
 - Persistent device registry
 - Temporary pairing offers with expiring codes
+- Headless local auto-approval for loopback and trusted LAN peers
 - Device capability tracking
 - Command routing skeleton
 - Optional mDNS discovery via Zeroconf when installed

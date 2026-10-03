@@ -62,14 +62,16 @@ Because the gateway binds to `0.0.0.0`, it is reachable from any interface on th
 
 #### Pairing
 
-- Pairing uses a temporary pairing offer created by `brahma_connect.gateway.pairing.PairingManager`.
+- Pairing uses a temporary pairing offer created by `brahma_connect.gateway.pairing.PairingManager` for peers that are not trusted local addresses.
 - Each offer includes a `pairing_token`, a 6-digit `pairing_code`, and an expiration timestamp.
 - Pairing offers expire after `pairing_ttl_seconds` (default 300 seconds).
 
 #### Approval
 
-- Incoming device connections begin with `HELLO` and create a pending request.
-- A user must explicitly approve or reject each pending pairing request through the app.
+- Incoming device connections from loopback or local-network IPs (`127.0.0.0/8`, RFC 1918/private ranges, link-local addresses, and the configured `100.*` carrier-local range) are auto-approved by the headless gateway.
+- Auto-approved connections receive a generated permanent `device_secret` in the `pair_approved` handshake and authenticate immediately; no desktop GUI or temporary pairing session is required.
+- The behavior is enabled by default for Termux and can be disabled with `auto_approve_local: false` in `config/brahma_connect.json`.
+- Non-local incoming connections still create pending requests that a user must explicitly approve or reject.
 - Approved devices are added to the registry and issued a permanent `device_secret`.
 
 #### Device credentials

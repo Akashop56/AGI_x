@@ -177,26 +177,19 @@ def test_real_gateway_round_trip(tmp_path):
         gateway.service.gateway._phone_body = bridge
 
         async def flow():
-            import urllib.request
-
             async with websockets.connect(f"ws://127.0.0.1:{gateway.port}/ws") as ws:
                 hello = build_message(ProtocolTypes.HELLO, _hello_payload())
                 await ws.send(json.dumps(hello))
-                pair_request = json.loads(await asyncio.wait_for(ws.recv(), 5))
-                assert pair_request["type"] == ProtocolTypes.PAIR_REQUEST
-                pending_id = pair_request["payload"]["pending_id"]
 
-                approve_url = f"http://127.0.0.1:{gateway.port}/gateway/pending/{pending_id}/approve"
-                request = urllib.request.Request(approve_url, method="POST", data=b"")
-                with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310
-                    approved = json.loads(response.read())
-
-                paired = json.loads(await asyncio.wait_for(ws.recv(), 5))
-                assert paired["type"] == ProtocolTypes.PAIR_APPROVED
+                # Loopback peers are auto-approved by the headless gateway;
+                # there is no GUI pending request or HTTP approval round trip.
+                approved = json.loads(await asyncio.wait_for(ws.recv(), 5))
+                assert approved["type"] == ProtocolTypes.PAIR_APPROVED
+                assert approved["payload"]["auto_approved"] is True
 
                 await ws.send(json.dumps(build_message(ProtocolTypes.AUTHENTICATE, {
-                    "device_id": approved["device"]["device_id"],
-                    "device_secret": approved["device_secret"],
+                    "device_id": approved["payload"]["device"]["device_id"],
+                    "device_secret": approved["payload"]["device_secret"],
                 })))
                 assert json.loads(await asyncio.wait_for(ws.recv(), 5))["type"] == ProtocolTypes.DEVICE_ONLINE
                 assert json.loads(await asyncio.wait_for(ws.recv(), 5))["type"] == ProtocolTypes.CAPABILITIES

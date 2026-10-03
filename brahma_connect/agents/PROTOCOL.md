@@ -45,12 +45,16 @@ Example:
 ## Expected flow
 
 1. Agent connects and sends `hello`.
-2. Gateway responds with a pairing request or known-device instructions.
-3. User approves the device in Brahma.
-4. Agent sends `authenticate` with the persistent secret.
-5. Gateway marks the device online and publishes capabilities.
-6. Brahma sends `execute` requests.
-7. Agent replies with `result` or `error`.
+2. The headless gateway immediately sends `pair_approved` for loopback or trusted local-network peers; other peers receive a pairing request for explicit approval.
+3. The agent sends `authenticate` with the persistent secret from `pair_approved`.
+4. The gateway marks the device online and publishes capabilities.
+5. Brahma sends `execute` requests.
+6. The agent replies with `result` or `error`.
+
+Local auto-approval is enabled by default for the Termux/headless deployment and
+can be disabled with `auto_approve_local: false` in the gateway configuration.
+The trust decision uses the WebSocket peer IP, not a hostname supplied by the
+client.
 
 ## Headless body events (Brahma Evo on Android/Termux)
 

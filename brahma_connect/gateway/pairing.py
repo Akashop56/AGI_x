@@ -2,10 +2,56 @@ from __future__ import annotations
 
 import secrets
 import time
+from ipaddress import IPv4Address, ip_address, ip_network
 from typing import Any
 
 from .authentication import generate_pairing_token
 from .models import PairingOffer
+
+
+_LOCAL_CARRIER_NETWORK = ip_network("100.0.0.0/8")
+
+
+def is_trusted_local_address(address: str | None) -> bool:
+    """Return whether a WebSocket peer is on a trusted local address.
+
+    The headless Termux deployment has no desktop approval dialog, so the
+    gateway may bootstrap a companion from loopback or a local network.  Do
+    not resolve hostnames here: the decision must be based on the peer address
+    reported by the WebSocket server.
+
+    ``100.*`` is included deliberately for the phone/carrier-local network
+    used by some Termux setups, while ``is_private`` covers RFC 1918 ranges
+    such as ``192.168.*`` (as well as 10.* and 172.16/12).  IPv4-mapped IPv6
+    loopback/private addresses are normalized before checking.
+    """
+    raw = str(address or "").strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
+    # IPv6 link-local addresses may include a zone identifier (for example
+    # fe80::1%wlan0), which ip_address() does not accept on every Python
+    # version.
+    raw = raw.split("%", 1)[0]
+    if not raw:
+        return False
+
+    try:
+        parsed = ip_address(raw)
+    except ValueError:
+        return False
+
+    mapped = getattr(parsed, "ipv4_mapped", None)
+    if mapped is not None:
+        parsed = mapped
+
+    if parsed.is_unspecified or parsed.is_multicast or parsed.is_reserved:
+        return False
+    return bool(
+        parsed.is_loopback
+        or parsed.is_private
+        or parsed.is_link_local
+        or (isinstance(parsed, IPv4Address) and parsed in _LOCAL_CARRIER_NETWORK)
+    )
 
 
 class PairingManager:
@@ -14,6 +60,11 @@ class PairingManager:
         self.ttl_seconds = max(60, int(ttl_seconds))
         self._offers: dict[str, PairingOffer] = {}
         self._code_index: dict[str, str] = {}
+
+    @staticmethod
+    def is_trusted_local_address(address: str | None) -> bool:
+        """Expose the local trust policy used by the gateway handshake."""
+        return is_trusted_local_address(address)
 
     def _prune(self) -> None:
         now = time.time()

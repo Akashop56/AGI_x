@@ -76,7 +76,10 @@ Ports:
 3. The app discovers `_BRAHMA._tcp.local.` over mDNS — the Python gateway
    advertises it via Zeroconf automatically. If discovery is blocked on your
    network (AP isolation), type the host and port `8765` manually.
-4. Approve the pairing request:
+4. When the companion connects from the same phone or a trusted local
+   network, the headless gateway auto-approves it and sends its device secret
+   immediately—no desktop popup or session key is needed. Connections from
+   other networks can still be approved manually:
    * from the dashboard UI, or
    * from the gateway API: `curl http://<phone-ip>:8765/gateway/pending` then
      `curl -X POST http://<phone-ip>:8765/gateway/pending/<id>/approve`
