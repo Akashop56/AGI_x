@@ -1,4 +1,4 @@
-from core.user_paths import get_user_data_dir
+from core.user_paths import get_api_keys_path, get_workspace_dir
 import subprocess
 import sys
 import json
@@ -14,8 +14,8 @@ def get_base_dir():
 
 
 BASE_DIR         = get_base_dir()
-API_CONFIG_PATH  = get_user_data_dir() / "config" / "api_keys.json"
-PROJECTS_DIR     = Path.home() / "Desktop" / "BrahmaProjects"
+API_CONFIG_PATH  = get_api_keys_path()
+PROJECTS_DIR     = get_workspace_dir()
 MAX_FIX_ATTEMPTS = 5
 MODEL_PLANNER    = "gemini-flash-latest"
 MODEL_WRITER     = "gemini-flash-latest"

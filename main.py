@@ -1,4 +1,4 @@
-from core.user_paths import get_user_data_dir
+from core.user_paths import get_api_keys_path, get_user_data_dir, get_workspace_dir
 from core import pc_compat
 import os
 
@@ -108,7 +108,7 @@ def get_base_dir():
 
 
 BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = get_user_data_dir() / "config" / "api_keys.json"
+API_CONFIG_PATH = get_api_keys_path()
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
 STARTUP_LOG     = get_user_data_dir() / "logs" / "startup.log"
 LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
@@ -125,14 +125,13 @@ def _get_api_key() -> str:
     env_key = (_os.environ.get("GEMINI_API_KEY") or _os.environ.get("GOOGLE_API_KEY") or "").strip()
     if env_key:
         return env_key
-    for candidate in (API_CONFIG_PATH, BASE_DIR / "config" / "api_keys.json"):
-        try:
-            with open(candidate, "r", encoding="utf-8") as f:
-                key = (json.load(f).get("gemini_api_key") or "").strip()
-            if key:
-                return key
-        except Exception:
-            continue
+    try:
+        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+            key = (json.load(f).get("gemini_api_key") or "").strip()
+        if key:
+            return key
+    except Exception:
+        pass
     raise RuntimeError(
         "No Gemini API key configured. Use 'python main.py --set-key <KEY>', "
         "set GEMINI_API_KEY, or add it from the phone dashboard."
@@ -2334,10 +2333,7 @@ class BrahmaLive:
             print(f"[BRAHMA EVO] Redirection error: {e}")
 
         developer_settings = self.ui._load_app_settings() if hasattr(self.ui, "_load_app_settings") else {}
-        developer_workspace = str(developer_settings.get("developer_mode_workspace", "")).strip()
-        if not developer_workspace:
-            developer_workspace = str(Path.home() / "Desktop" / "BrahmaProjects")
-            Path(developer_workspace).mkdir(parents=True, exist_ok=True)
+        developer_workspace = str(get_workspace_dir(developer_settings.get("developer_mode_workspace")))
 
         presentation_request = _looks_like_presentation_request(text)
         spreadsheet_request = _looks_like_spreadsheet_request(text)
@@ -4913,9 +4909,8 @@ def _write_api_key(key: str) -> bool:
     key = (key or "").strip()
     if not key:
         return False
-    CONFIG_DIR = get_user_data_dir() / "config"
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    path = CONFIG_DIR / "api_keys.json"
+    path = API_CONFIG_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
     data: dict = {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))

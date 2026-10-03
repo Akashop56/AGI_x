@@ -1,4 +1,4 @@
-from core.user_paths import get_user_data_dir
+from core.user_paths import get_api_keys_path, get_user_data_dir
 """
 dashboard/server.py — Brahma Local HTTP Dashboard
 
@@ -83,7 +83,7 @@ def _quiet_run(*args, **kwargs):
 def _get_gemini_key() -> str | None:
     try:
         import json as _json
-        with open(get_user_data_dir() / "config" / "api_keys.json", "r", encoding="utf-8") as f:
+        with open(get_api_keys_path(), "r", encoding="utf-8") as f:
             return _json.load(f).get("gemini_api_key")
     except Exception:
         return None
@@ -735,7 +735,7 @@ class DashboardServer:
             """Authenticated: does the brain have a Gemini API key yet?"""
             if not _auth(req):
                 return JSONResponse({"ok": False, "error": "Unauthorized."}, status_code=401)
-            key_path = get_user_data_dir() / "config" / "api_keys.json"
+            key_path = get_api_keys_path()
             has_key = False
             try:
                 import json as _json
@@ -759,9 +759,8 @@ class DashboardServer:
                 return JSONResponse({"ok": False, "error": "api_key is required."}, status_code=400)
             import json as _json
 
-            key_dir = get_user_data_dir() / "config"
-            key_dir.mkdir(parents=True, exist_ok=True)
-            key_path = key_dir / "api_keys.json"
+            key_path = get_api_keys_path()
+            key_path.parent.mkdir(parents=True, exist_ok=True)
             data: dict = {}
             try:
                 data = _json.loads(key_path.read_text(encoding="utf-8"))

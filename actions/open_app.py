@@ -6,6 +6,47 @@ import time
 import subprocess
 import platform
 import shutil
+from core import pc_compat
+
+_ANDROID_APP_PACKAGES = {
+    "whatsapp": "com.whatsapp",
+    "chrome": "com.android.chrome",
+    "google chrome": "com.android.chrome",
+    "firefox": "org.mozilla.firefox",
+    "spotify": "com.spotify.music",
+    "discord": "com.discord",
+    "telegram": "org.telegram.messenger",
+    "instagram": "com.instagram.android",
+    "tiktok": "com.zhiliaoapp.musically",
+}
+
+
+def _is_android() -> bool:
+    return pc_compat.is_android() or platform.system().lower() == "android"
+
+
+def _launch_android(target: str) -> bool:
+    """Open a URL or Android package through Termux's intent bridge."""
+    raw_target = str(target or "").strip()
+    if not raw_target:
+        return False
+    package = _ANDROID_APP_PACKAGES.get(raw_target.lower())
+    open_target = package or raw_target
+    try:
+        result = subprocess.run(
+            ["termux-open", open_target],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0:
+            print(f"[open_app] ⚠️ termux-open failed: {result.stderr.strip()}")
+        return result.returncode == 0
+    except Exception as exc:
+        print(f"[open_app] ⚠️ Android launch failed: {exc}")
+        return False
+
 
 try:
     import psutil
@@ -229,13 +270,17 @@ def open_app(
     if not app_name:
         return "Please specify which application to open, sir."
 
-    system   = platform.system()
-    launcher = _OS_LAUNCHERS.get(system)
+    system = platform.system()
+    if _is_android():
+        system = "Android"
+        launcher = _launch_android
+        normalized = app_name
+    else:
+        launcher = _OS_LAUNCHERS.get(system)
+        normalized = _normalize(app_name)
 
     if launcher is None:
         return f"Unsupported OS: {system}"
-
-    normalized = _normalize(app_name)
     print(f"[open_app] 🚀 Launching: {app_name} → {normalized} ({system})")
 
     if player:

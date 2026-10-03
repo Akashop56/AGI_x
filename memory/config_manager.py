@@ -6,11 +6,11 @@ and AI options. Backed by config/app_settings.json.
 
 from __future__ import annotations
 import json
-from pathlib import Path
 from typing import Any, Dict
 
-BSE_DIR = Path(__file__).resolve().parent.parent
-CONFIG_DIR = BSE_DIR / "config"
+from core.user_paths import get_config_dir
+
+CONFIG_DIR = get_config_dir()
 SETTINGS_FILE = CONFIG_DIR / "app_settings.json"
 
 

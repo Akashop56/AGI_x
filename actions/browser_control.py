@@ -20,6 +20,64 @@ else:  # pragma: no cover - Android/Termux path
         pass
 
 
+def _is_android() -> bool:
+    return pc_compat.is_android() or platform.system().lower() == "android"
+
+
+def _open_android_url(url: str) -> str:
+    try:
+        result = subprocess.run(
+            ["termux-open", url],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except FileNotFoundError:
+        return "Could not open the link: termux-open is unavailable in this Termux environment."
+    except Exception as exc:
+        return f"Could not open the link: {exc}"
+
+    if result.returncode == 0:
+        return f"Opened: {url}"
+    detail = (result.stderr or result.stdout or "").strip()
+    return f"Could not open {url}: {detail or 'termux-open failed.'}"
+
+
+def _browser_control_android(parameters: dict) -> str:
+    action = str(parameters.get("action", "")).lower().strip()
+    url = str(parameters.get("url", "") or "").strip()
+
+    if action == "search":
+        from urllib.parse import quote_plus
+
+        query = str(parameters.get("query", "") or "").strip()
+        if not query:
+            return "Please provide a search query."
+        engine = str(parameters.get("engine", "google") or "google").lower()
+        search_urls = {
+            "google": "https://www.google.com/search?q=",
+            "bing": "https://www.bing.com/search?q=",
+            "duckduckgo": "https://duckduckgo.com/?q=",
+        }
+        url = search_urls.get(engine, search_urls["google"]) + quote_plus(query)
+    elif action in {"go_to", "navigate"} and not url and parameters.get("query"):
+        return _browser_control_android({**parameters, "action": "search"})
+    elif action in {"open_tab", "new_tab"} and not url:
+        return "Please provide a URL to open."
+    elif action not in {"go_to", "navigate", "open_tab", "new_tab"}:
+        return pc_compat.unavailable(
+            "Interactive browser automation",
+            detail="On Android, Brahma can open or search for a link, but cannot control page elements.",
+        )
+
+    if not url:
+        return "Please provide a URL to open."
+    if not url.lower().startswith(("http://", "https://", "mailto:", "tel:", "intent:")):
+        url = "https://" + url
+    return _open_android_url(url)
+
+
 def _log(message: str) -> None:
     try:
         print(message.encode("ascii", "replace").decode("ascii"))
@@ -570,16 +628,19 @@ def browser_control(
     """
     import time
 
+    parameters = parameters or {}
+    action = str(parameters.get("action", "")).lower().strip()
+
+    if _is_android():
+        return _browser_control_android(parameters)
+
     if async_playwright is None:
-        # Android/Termux: the companion app opens URLs; there is no browser engine here.
         return pc_compat.unavailable(
             "Browser automation",
-            detail="Ask the companion app to open the link instead.",
+            detail="Interactive browser automation requires a supported desktop browser engine.",
         )
 
     from actions.playwright_mcp_client import get_playwright_mcp_client
-
-    action = (parameters or {}).get("action", "").lower().strip()
     result = "Unknown action."
 
     # Try Microsoft Playwright MCP first

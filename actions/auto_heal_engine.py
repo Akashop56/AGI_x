@@ -6,7 +6,7 @@ safely apply patches with atomic rollback guarantees, and record changelogs.
 """
 
 from __future__ import annotations
-from core.user_paths import get_user_data_dir
+from core.user_paths import get_api_keys_path, get_user_data_dir
 
 import ast
 import json
@@ -27,7 +27,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = get_user_data_dir() / "config"
 PATCH_HISTORY_FILE = CONFIG_DIR / "patch_history.json"
 BACKUPS_DIR = CONFIG_DIR / "patch_backups"
-API_CONFIG_PATH = CONFIG_DIR / "api_keys.json"
+API_CONFIG_PATH = get_api_keys_path()
 
 
 def _get_gemini_api_key() -> str:
