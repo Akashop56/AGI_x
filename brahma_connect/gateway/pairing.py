@@ -9,7 +9,16 @@ from .authentication import generate_pairing_token
 from .models import PairingOffer
 
 
-_LOCAL_CARRIER_NETWORK = ip_network("100.0.0.0/8")
+_LOCAL_IPV4_NETWORKS = (
+    ip_network("10.0.0.0/8"),
+    ip_network("172.16.0.0/12"),
+    ip_network("192.168.0.0/16"),
+    ip_network("100.0.0.0/8"),
+)
+_LOCAL_IPV6_NETWORKS = (
+    ip_network("fc00::/7"),
+    ip_network("fe80::/10"),
+)
 
 
 def is_trusted_local_address(address: str | None) -> bool:
@@ -21,9 +30,9 @@ def is_trusted_local_address(address: str | None) -> bool:
     reported by the WebSocket server.
 
     ``100.*`` is included deliberately for the phone/carrier-local network
-    used by some Termux setups, while ``is_private`` covers RFC 1918 ranges
-    such as ``192.168.*`` (as well as 10.* and 172.16/12).  IPv4-mapped IPv6
-    loopback/private addresses are normalized before checking.
+    used by some Termux setups. The other explicit ranges are RFC 1918
+    private networks plus IPv6 unique-local/link-local networks. IPv4-mapped
+    IPv6 loopback/private addresses are normalized before checking.
     """
     raw = str(address or "").strip()
     if raw.startswith("[") and raw.endswith("]"):
@@ -44,14 +53,15 @@ def is_trusted_local_address(address: str | None) -> bool:
     if mapped is not None:
         parsed = mapped
 
+    # Check loopback before is_reserved: Python classifies IPv6 ::1 as both
+    # loopback and reserved, but loopback is explicitly trusted here.
+    if parsed.is_loopback:
+        return True
     if parsed.is_unspecified or parsed.is_multicast or parsed.is_reserved:
         return False
-    return bool(
-        parsed.is_loopback
-        or parsed.is_private
-        or parsed.is_link_local
-        or (isinstance(parsed, IPv4Address) and parsed in _LOCAL_CARRIER_NETWORK)
-    )
+    if isinstance(parsed, IPv4Address):
+        return any(parsed in network for network in _LOCAL_IPV4_NETWORKS)
+    return any(parsed in network for network in _LOCAL_IPV6_NETWORKS)
 
 
 class PairingManager:
