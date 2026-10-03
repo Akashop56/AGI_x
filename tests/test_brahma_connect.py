@@ -5,7 +5,7 @@ from brahma_connect.gateway.command_router import CommandRouter
 from brahma_connect.gateway.device_manager import DeviceManager
 from brahma_connect.gateway.capability_manager import CapabilityManager
 from brahma_connect.gateway.models import DeviceRecord
-from brahma_connect.gateway.pairing import PairingManager
+from brahma_connect.gateway.pairing import PairingManager, is_trusted_local_address
 from brahma_connect.gateway.protocol import ProtocolTypes, build_message, validate_message
 from brahma_connect.gateway.websocket import ConnectionHub
 
@@ -58,6 +58,14 @@ def test_pairing_manager_returns_expiring_offer():
     assert len(offer.pairing_code) == 6
     assert pairing.get_offer(offer.pairing_token) is not None
     assert pairing.get_offer_by_code(offer.pairing_code) is not None
+
+
+def test_pairing_manager_trusts_loopback_and_local_network_addresses():
+    for address in ("127.0.0.1", "::1", "100.64.12.4", "192.168.1.25", "10.0.0.8", "172.20.0.4"):
+        assert is_trusted_local_address(address), address
+
+    for address in ("8.8.8.8", "203.0.113.5", "gateway.local", ""):
+        assert not is_trusted_local_address(address), address
 
 
 def test_command_router_reports_offline_device(tmp_path: Path):

@@ -263,7 +263,14 @@ fun BrahmaConnectApp(
             }
             composable("connected_anim") {
                 ConnectedAnimatedScreen(
-                    onFinished = { navController.navigate("home") { popUpTo(0) } }
+                    onFinished = { navController.navigate("home") { popUpTo(0) } },
+                    onRetry = onStartService,
+                    onBack = {
+                        context.startService(Intent(context, BrahmaConnectForegroundService::class.java).apply {
+                            action = BrahmaConnectForegroundService.ACTION_STOP
+                        })
+                        navController.navigate("connect") { popUpTo(0) }
+                    },
                 )
             }
             composable("home") {
@@ -372,16 +379,50 @@ fun ConnectChoiceScreen(onScanQr: () -> Unit, onEnterIp: () -> Unit, onFindLocal
 }
 
 @Composable
-fun ConnectedAnimatedScreen(onFinished: () -> Unit) {
-    LaunchedEffect(Unit) {
-        delay(2000)
-        onFinished()
+fun ConnectedAnimatedScreen(
+    onFinished: () -> Unit,
+    onRetry: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val connectionState by AgentStateStore.connectionState.collectAsState()
+    val status by AgentStateStore.statusText.collectAsState()
+    val error by AgentStateStore.lastError.collectAsState()
+
+    // Only leave the visualizer after the gateway confirms authentication. A
+    // fixed delay made a failed cleartext connection look successful and left
+    // the following screen empty when no credential existed.
+    LaunchedEffect(connectionState) {
+        if (connectionState == ConnectionState.CONNECTED) {
+            delay(1200)
+            onFinished()
+        }
     }
+
+    val connected = connectionState == ConnectionState.CONNECTED
+    val failed = error != null && !connected
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         GlassCard {
-            Text("Connection Established", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
+            Text(
+                if (connected) "Connection Established" else "Connecting to Brahma",
+                style = MaterialTheme.typography.headlineSmall,
+                color = if (connected) MaterialTheme.colorScheme.primary else androidx.compose.ui.graphics.Color.White,
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(status, color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.8f))
+            error?.let {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(it, color = MaterialTheme.colorScheme.error)
+            }
             Spacer(modifier = Modifier.height(16.dp))
-            androidx.compose.material3.CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+            if (connected) {
+                androidx.compose.material3.CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+            } else if (failed) {
+                Button(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Retry") }
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Back") }
+            } else {
+                androidx.compose.material3.CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+            }
         }
     }
 }

@@ -39,6 +39,9 @@ class BrahmaGatewayConfig:
     service_name: str = "_BRAHMA._tcp.local."
     pairing_ttl_seconds: int = 300
     request_timeout_seconds: int = 30
+    # Headless Termux has no GUI approval dialog. Local peers can bootstrap
+    # themselves and still receive a generated persistent device secret.
+    auto_approve_local: bool = True
     config_path: Path | None = None
     registry_path: Path | None = None
 
@@ -53,6 +56,7 @@ class BrahmaGatewayConfig:
             "service_name": "_BRAHMA._tcp.local.",
             "pairing_ttl_seconds": 300,
             "request_timeout_seconds": 30,
+            "auto_approve_local": True,
         }
         config_path = _default_config_path(base_dir)
         if config_path.exists():
@@ -70,6 +74,7 @@ class BrahmaGatewayConfig:
             service_name=str(data.get("service_name", "_BRAHMA._tcp.local.")),
             pairing_ttl_seconds=int(data.get("pairing_ttl_seconds", 300)),
             request_timeout_seconds=int(data.get("request_timeout_seconds", 30)),
+            auto_approve_local=bool(data.get("auto_approve_local", True)),
             config_path=config_path,
             registry_path=_default_registry_path(base_dir),
         )
@@ -83,6 +88,7 @@ class BrahmaGatewayConfig:
             "service_name": self.service_name,
             "pairing_ttl_seconds": self.pairing_ttl_seconds,
             "request_timeout_seconds": self.request_timeout_seconds,
+            "auto_approve_local": self.auto_approve_local,
         }
 
     def save(self) -> None:
@@ -275,6 +281,60 @@ class BrahmaGateway:
         self._append_log("PAIRING_REQUEST", device=device_name, platform=platform, code=offer.pairing_code)
         return offer.to_dict()
 
+    @staticmethod
+    def _websocket_client_ip(websocket: WebSocket) -> str:
+        client = websocket.client
+        return str(client.host).strip() if client and client.host else ""
+
+    def _local_auto_approval_allowed(self, websocket: WebSocket) -> bool:
+        return self.config.auto_approve_local and self.pairing_manager.is_trusted_local_address(
+            self._websocket_client_ip(websocket)
+        )
+
+    def _create_device_from_payload(self, payload: dict[str, Any], *, ip: str) -> tuple[Any, str]:
+        battery = payload.get("battery")
+        try:
+            battery_value = int(battery) if isinstance(battery, (int, float, str)) and str(battery).isdigit() else None
+        except (TypeError, ValueError):
+            battery_value = None
+        return self.device_manager.create_from_pairing(
+            name=str(payload.get("device_name") or "Unknown Device").strip(),
+            platform=str(payload.get("platform") or "unknown").strip(),
+            os_version=str(payload.get("os_version") or ""),
+            agent_version=str(payload.get("agent_version") or ""),
+            ip=ip,
+            battery=battery_value,
+            capabilities=list(payload.get("capabilities") or []),
+            permissions=list(payload.get("permissions") or []),
+            metadata=dict(payload.get("metadata") or {}),
+        )
+
+    def _auto_approve_local_device(self, payload: dict[str, Any], *, ip: str) -> dict[str, Any]:
+        """Create credentials and return the approval payload immediately.
+
+        This is intentionally independent of pairing offers: the headless
+        Termux backend has no desktop dialog to consume a pending request, and
+        a local companion must be able to bootstrap from its initial ``hello``.
+        The generated device secret is still persisted and is used for every
+        subsequent authenticated connection.
+        """
+        record, secret = self._create_device_from_payload(payload, ip=ip)
+        self._append_log(
+            "PAIR_AUTO_APPROVED",
+            device=record.device_id,
+            name=record.name,
+            platform=record.platform,
+            ip=ip,
+            reason="trusted_local_address",
+        )
+        return {
+            "success": True,
+            "auto_approved": True,
+            "reason": "trusted_local_address",
+            "device": record.to_dict(),
+            "device_secret": secret,
+        }
+
     def list_pending_requests(self) -> list[dict[str, Any]]:
         return [
             {
@@ -348,29 +408,13 @@ class BrahmaGateway:
         offer_token = str(payload.get("pairing_token") or "").strip()
         offer_code = str(payload.get("pairing_code") or "").strip()
         offer = self.pairing_manager.get_offer(offer_token) if offer_token else self.pairing_manager.get_offer_by_code(offer_code)
+        ip = self._websocket_client_ip(websocket)
         if offer is None:
+            if self._local_auto_approval_allowed(websocket):
+                return self._auto_approve_local_device(payload, ip=ip)
             return {"success": False, "error": "Invalid or expired pairing token."}
 
-        device_name = str(payload.get("device_name") or "Unknown Device").strip()
-        platform = str(payload.get("platform") or "unknown").strip()
-        os_version = str(payload.get("os_version") or "")
-        agent_version = str(payload.get("agent_version") or "")
-        battery = payload.get("battery")
-        capabilities = list(payload.get("capabilities") or [])
-        permissions = list(payload.get("permissions") or [])
-        metadata = dict(payload.get("metadata") or {})
-        ip = websocket.client.host if websocket.client else ""
-        record, secret = self.device_manager.create_from_pairing(
-            name=device_name,
-            platform=platform,
-            os_version=os_version,
-            agent_version=agent_version,
-            ip=ip,
-            battery=int(battery) if isinstance(battery, (int, float, str)) and str(battery).isdigit() else None,
-            capabilities=capabilities,
-            permissions=permissions,
-            metadata=metadata,
-        )
+        record, secret = self._create_device_from_payload(payload, ip=ip)
         self._append_log("PAIR_APPROVED", device=record.device_id, name=record.name, platform=record.platform)
         return {
             "success": True,
@@ -462,6 +506,22 @@ class BrahmaGateway:
                         continue
 
                     if msg_type == ProtocolTypes.HELLO:
+                        client_ip = self._websocket_client_ip(websocket)
+                        if self._local_auto_approval_allowed(websocket):
+                            approval = self._auto_approve_local_device(payload, ip=client_ip)
+                            # The Android client consumes this exact payload to
+                            # persist its credential and immediately send the
+                            # AUTHENTICATE message. No GUI or session key is
+                            # involved for a trusted local peer.
+                            await websocket.send_json(
+                                build_message(
+                                    ProtocolTypes.PAIR_APPROVED,
+                                    approval,
+                                    request_id=request_id,
+                                )
+                            )
+                            continue
+
                         pending_id = new_request_id()
                         self._pending_requests[pending_id] = {
                             "request_id": pending_id,
@@ -475,7 +535,7 @@ class BrahmaGateway:
                             "permissions": list(payload.get("permissions") or []),
                             "battery": payload.get("battery"),
                             "metadata": dict(payload.get("metadata") or {}),
-                            "ip": websocket.client.host if websocket.client else "",
+                            "ip": client_ip,
                         }
                         await websocket.send_json(
                             build_message(

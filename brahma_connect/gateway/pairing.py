@@ -2,10 +2,66 @@ from __future__ import annotations
 
 import secrets
 import time
+from ipaddress import IPv4Address, ip_address, ip_network
 from typing import Any
 
 from .authentication import generate_pairing_token
 from .models import PairingOffer
+
+
+_LOCAL_IPV4_NETWORKS = (
+    ip_network("10.0.0.0/8"),
+    ip_network("172.16.0.0/12"),
+    ip_network("192.168.0.0/16"),
+    ip_network("100.0.0.0/8"),
+)
+_LOCAL_IPV6_NETWORKS = (
+    ip_network("fc00::/7"),
+    ip_network("fe80::/10"),
+)
+
+
+def is_trusted_local_address(address: str | None) -> bool:
+    """Return whether a WebSocket peer is on a trusted local address.
+
+    The headless Termux deployment has no desktop approval dialog, so the
+    gateway may bootstrap a companion from loopback or a local network.  Do
+    not resolve hostnames here: the decision must be based on the peer address
+    reported by the WebSocket server.
+
+    ``100.*`` is included deliberately for the phone/carrier-local network
+    used by some Termux setups. The other explicit ranges are RFC 1918
+    private networks plus IPv6 unique-local/link-local networks. IPv4-mapped
+    IPv6 loopback/private addresses are normalized before checking.
+    """
+    raw = str(address or "").strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
+    # IPv6 link-local addresses may include a zone identifier (for example
+    # fe80::1%wlan0), which ip_address() does not accept on every Python
+    # version.
+    raw = raw.split("%", 1)[0]
+    if not raw:
+        return False
+
+    try:
+        parsed = ip_address(raw)
+    except ValueError:
+        return False
+
+    mapped = getattr(parsed, "ipv4_mapped", None)
+    if mapped is not None:
+        parsed = mapped
+
+    # Check loopback before is_reserved: Python classifies IPv6 ::1 as both
+    # loopback and reserved, but loopback is explicitly trusted here.
+    if parsed.is_loopback:
+        return True
+    if parsed.is_unspecified or parsed.is_multicast or parsed.is_reserved:
+        return False
+    if isinstance(parsed, IPv4Address):
+        return any(parsed in network for network in _LOCAL_IPV4_NETWORKS)
+    return any(parsed in network for network in _LOCAL_IPV6_NETWORKS)
 
 
 class PairingManager:
@@ -14,6 +70,11 @@ class PairingManager:
         self.ttl_seconds = max(60, int(ttl_seconds))
         self._offers: dict[str, PairingOffer] = {}
         self._code_index: dict[str, str] = {}
+
+    @staticmethod
+    def is_trusted_local_address(address: str | None) -> bool:
+        """Expose the local trust policy used by the gateway handshake."""
+        return is_trusted_local_address(address)
 
     def _prune(self) -> None:
         now = time.time()

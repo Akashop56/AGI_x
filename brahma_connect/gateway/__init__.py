@@ -3,7 +3,7 @@ from .command_router import CommandRouter
 from .device_manager import DeviceManager
 from .discovery import GatewayDiscovery
 from .models import DeviceRecord, PairingOffer
-from .pairing import PairingManager
+from .pairing import PairingManager, is_trusted_local_address
 from .protocol import ProtocolTypes, build_message
 from .server import BrahmaGateway, BrahmaGatewayConfig
 
@@ -17,6 +17,7 @@ __all__ = [
     "GatewayDiscovery",
     "PairingManager",
     "PairingOffer",
+    "is_trusted_local_address",
     "ProtocolTypes",
     "build_message",
 ]
