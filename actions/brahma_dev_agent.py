@@ -1,4 +1,4 @@
-from core.user_paths import get_user_data_dir
+from core.user_paths import get_api_keys_path, get_user_data_dir, get_workspace_dir
 import os
 import re
 import sys
@@ -18,7 +18,7 @@ def get_base_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 BASE_DIR = get_base_dir()
-API_CONFIG_PATH = get_user_data_dir() / "config" / "api_keys.json"
+API_CONFIG_PATH = get_api_keys_path()
 SETTINGS_PATH = get_user_data_dir() / "config" / "app_settings.json"
 
 # ==============================================================================
@@ -434,7 +434,7 @@ class BrahmaDevAgent:
 def run_dev_agent(parameters: dict[str, Any], speak: Optional[Callable[[str], None]] = None) -> str:
     params = dict(parameters or {})
     description = str(params.get("description") or params.get("brief") or "").strip()
-    workspace = str(params.get("workspace_path") or params.get("output_dir") or Path.home() / "Desktop" / "BrahmaProjects").strip()
+    workspace = str(get_workspace_dir(params.get("workspace_path") or params.get("output_dir")))
     
     agent = BrahmaDevAgent(workspace_dir=workspace, speak=speak)
     return agent.run(description)

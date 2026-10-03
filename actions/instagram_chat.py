@@ -1,4 +1,4 @@
-from core.user_paths import get_user_data_dir
+from core.user_paths import get_api_keys_path, get_user_data_dir
 # actions/instagram_chat.py
 """
 Instagram Chat Integration for Brahma AI.
@@ -41,7 +41,7 @@ def get_base_dir():
     return Path(__file__).resolve().parent.parent
 
 BASE_DIR = get_base_dir()
-CONFIG_PATH = get_user_data_dir() / "config" / "api_keys.json"
+CONFIG_PATH = get_api_keys_path()
 SESSION_PATH = get_user_data_dir() / "config" / "ig_session.json"
 
 def set_ig_prompt_callback(callback):

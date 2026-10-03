@@ -1,9 +1,12 @@
-from core.user_paths import get_user_data_dir
+from core.user_paths import get_api_keys_path, get_workspace_dir
 import subprocess
 import sys
 import json
 import re
 import time
+import os
+import platform
+import shutil
 from pathlib import Path
 
 
@@ -14,8 +17,8 @@ def get_base_dir():
 
 
 BASE_DIR         = get_base_dir()
-API_CONFIG_PATH  = get_user_data_dir() / "config" / "api_keys.json"
-PROJECTS_DIR     = Path.home() / "Desktop" / "BrahmaProjects"
+API_CONFIG_PATH  = get_api_keys_path()
+PROJECTS_DIR     = get_workspace_dir()
 MAX_FIX_ATTEMPTS = 5
 MODEL_PLANNER    = "gemini-flash-latest"
 MODEL_WRITER     = "gemini-flash-latest"
@@ -271,18 +274,28 @@ def _install_dependencies(dependencies: list[str], project_dir: Path) -> str:
         return f"Install error (non-fatal): {e}"
 
 def _open_vscode(project_dir: Path) -> bool:
-    vscode_candidates = [
-        "code",
-        rf"C:\Users\{Path.home().name}\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd",
-        r"C:\Program Files\Microsoft VS Code\bin\code.cmd",
-    ]
-    for cmd in vscode_candidates:
+    is_windows = platform.system() == "Windows"
+    if is_windows:
+        candidates = [
+            shutil.which("code"),
+            Path.home() / "AppData" / "Local" / "Programs" / "Microsoft VS Code" / "bin" / "code.cmd",
+        ]
+        program_files = os.environ.get("ProgramFiles")
+        if program_files:
+            candidates.append(Path(program_files) / "Microsoft VS Code" / "bin" / "code.cmd")
+    else:
+        code = shutil.which("code")
+        candidates = [code] if code else []
+
+    for cmd in candidates:
+        if not cmd:
+            continue
         try:
             subprocess.Popen(
-                [cmd, str(project_dir)],
-                shell=True,
+                [str(cmd), str(project_dir)],
+                shell=is_windows,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stderr=subprocess.DEVNULL,
             )
             time.sleep(1.5)
             print(f"[DevAgent] 💻 VSCode opened: {project_dir}")
@@ -442,6 +455,7 @@ def _build_project(
     timeout: int,
     speak=None,
     player=None,
+    workspace_dir: str | Path | None = None,
 ) -> str:
 
     def log(msg: str):
@@ -463,7 +477,8 @@ def _build_project(
 
     proj_name    = project_name or plan.get("project_name", "brahma_project")
     proj_name    = re.sub(r"[^\w\-]", "_", proj_name)
-    project_dir  = PROJECTS_DIR / proj_name
+    project_root = get_workspace_dir(workspace_dir)
+    project_dir  = project_root / proj_name
     project_dir.mkdir(parents=True, exist_ok=True)
 
     files        = plan.get("files", [])
@@ -589,6 +604,7 @@ def dev_agent(
     language     = p.get("language", "python").strip()
     project_name = p.get("project_name", "").strip()
     timeout      = int(p.get("timeout", 30))
+    workspace_dir = p.get("workspace_path") or p.get("output_dir")
 
     if not description:
         return "Please describe the project you want me to build, sir."
@@ -600,4 +616,5 @@ def dev_agent(
         timeout      = timeout,
         speak        = speak,
         player       = player,
+        workspace_dir = workspace_dir,
     )

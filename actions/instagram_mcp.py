@@ -1,5 +1,5 @@
 from __future__ import annotations
-from core.user_paths import get_user_data_dir
+from core.user_paths import get_api_keys_path, get_user_data_dir
 """
 actions/instagram_mcp.py
 Instagram Model Context Protocol (MCP) & Background Social Engine for Brahma AI.
@@ -40,7 +40,7 @@ def _get_base_dir() -> Path:
 
 
 BASE_DIR = _get_base_dir()
-CONFIG_PATH = get_user_data_dir() / "config" / "api_keys.json"
+CONFIG_PATH = get_api_keys_path()
 SESSION_PATH = get_user_data_dir() / "config" / "ig_session.json"
 BROWSER_PROFILE_DIR = get_user_data_dir() / "config" / "ig_browser_profile"
 LOG_PATH = BASE_DIR / "ig_debug.log"

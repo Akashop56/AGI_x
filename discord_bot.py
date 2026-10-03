@@ -1,5 +1,5 @@
 from __future__ import annotations
-from core.user_paths import get_user_data_dir
+from core.user_paths import get_api_keys_path
 
 import asyncio
 import json
@@ -44,7 +44,7 @@ def _base_dir() -> Path:
 
 
 BASE_DIR = _base_dir()
-API_KEYS_FILE = get_user_data_dir() / "config" / "api_keys.json"
+API_KEYS_FILE = get_api_keys_path()
 
 
 def _load_api_keys() -> dict:

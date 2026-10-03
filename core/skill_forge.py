@@ -17,14 +17,14 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.user_paths import get_user_data_dir
+from core.user_paths import get_api_keys_path, get_user_data_dir
 from core.skill_crucible import SkillCrucible
 from core.dynamic_registry import DynamicToolRegistry
 
 logger = logging.getLogger("SkillForge")
 
 CONFIG_DIR = get_user_data_dir() / "config"
-API_CONFIG_PATH = CONFIG_DIR / "api_keys.json"
+API_CONFIG_PATH = get_api_keys_path()
 
 
 def _get_gemini_api_key() -> str:

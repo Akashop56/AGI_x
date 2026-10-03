@@ -2,20 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
-from pathlib import Path
 from typing import Any, Callable
 
 from brahma_connect.service import get_service
+from core.user_paths import get_project_root
 
 
-def _base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-
-BASE_DIR = _base_dir()
+BASE_DIR = get_project_root()
 _SERVICE_PROVIDER: Callable[[], Any] | None = None
 
 
@@ -24,9 +17,16 @@ def set_service_provider(provider: Callable[[], Any] | None) -> None:
     _SERVICE_PROVIDER = provider
 
 
-def _service():
+def _service(player=None):
     if _SERVICE_PROVIDER is not None:
         return _SERVICE_PROVIDER()
+    if player is not None:
+        try:
+            service = getattr(player, "brahma_connect_service", None)
+            if service is not None:
+                return service
+        except Exception:
+            pass
     return get_service(BASE_DIR)
 
 
@@ -158,7 +158,7 @@ def _single_or_ambiguous(matches: list[dict[str, Any]], *, device_label: str, ac
 
 def connect_list_devices(parameters: dict[str, Any] | None = None, player=None, speak=None) -> str:
     try:
-        service = _service()
+        service = _service(player)
         return _format_devices(service.list_devices())
     except Exception as exc:
         return _fail(str(exc), "GATEWAY_UNAVAILABLE", action="connect_list_devices")
@@ -170,7 +170,7 @@ def connect_get_device(parameters: dict[str, Any] | None = None, player=None, sp
     if not target:
         return _fail("A device name or id is required.", "MISSING_PARAMETERS", action="connect_get_device")
     try:
-        service = _service()
+        service = _service(player)
         direct = service.get_device(target)
         if direct:
             return _dump({"success": True, "device": direct})
@@ -197,7 +197,7 @@ def connect_get_capabilities(parameters: dict[str, Any] | None = None, player=No
     if not target:
         return _fail("A device name or id is required.", "MISSING_PARAMETERS", action="connect_get_capabilities")
     try:
-        service = _service()
+        service = _service(player)
         result = service.get_capabilities(target)
         if not result.get("success", False):
             return _dump(result)
@@ -220,7 +220,7 @@ def connect_get_capabilities(parameters: dict[str, Any] | None = None, player=No
 def connect_pair_device(parameters: dict[str, Any] | None = None, player=None, speak=None) -> str:
     params = parameters or {}
     try:
-        service = _service()
+        service = _service(player)
         pending_id = str(params.get("pending_id") or "").strip()
         if pending_id:
             result = asyncio.run(service.approve_pending_request(pending_id))
@@ -245,7 +245,7 @@ def connect_disconnect_device(parameters: dict[str, Any] | None = None, player=N
         return _fail("A device name or id is required.", "MISSING_PARAMETERS", action="connect_disconnect_device")
     reason = str(params.get("reason") or "Disconnected by Brahma").strip()
     try:
-        service = _service()
+        service = _service(player)
         result = asyncio.run(service.disconnect_device(target, reason=reason))
         return _dump(result)
     except Exception as exc:
@@ -287,7 +287,7 @@ def connect_execute(parameters: dict[str, Any] | None = None, player=None, speak
         command_parameters["required_capabilities"] = required_capabilities
 
     try:
-        service = _service()
+        service = _service(player)
         result = service.route_command(target, action, command_parameters)
         if not isinstance(result, dict):
             return _dump({
@@ -310,3 +310,159 @@ def connect_execute(parameters: dict[str, Any] | None = None, player=None, speak
         return _dump(result)
     except Exception as exc:
         return _fail(str(exc), "GATEWAY_UNAVAILABLE", device=target, action=action)
+
+
+def execute_android_companion_action(
+    action: str,
+    parameters: dict[str, Any] | None = None,
+    *,
+    player=None,
+    target: str | None = None,
+) -> dict[str, Any]:
+    """Run an existing native command on one unambiguous online Android peer.
+
+    This is a selection/response adapter around ``connect_execute``; command
+    validation, routing, and execution still use Brahma Connect's existing RPC.
+    """
+    action = str(action or "").strip().lower()
+    command_parameters = dict(parameters or {})
+    requested = str(
+        target
+        or command_parameters.pop("device", None)
+        or command_parameters.pop("target", None)
+        or command_parameters.pop("device_id", None)
+        or ""
+    ).strip()
+
+    if action not in {"launch_app", "open_url"}:
+        return {
+            "success": False,
+            "action": action,
+            "error": f"Unsupported Android companion action: {action or '(empty)'}.",
+            "error_code": "UNSUPPORTED_ACTION",
+        }
+
+    try:
+        service = _service(player)
+        devices = [device for device in service.list_devices() if isinstance(device, dict)]
+    except Exception as exc:
+        return {
+            "success": False,
+            "action": action,
+            "error": f"Could not inspect connected Android companions: {exc}",
+            "error_code": "GATEWAY_UNAVAILABLE",
+        }
+
+    android_devices = [
+        device
+        for device in devices
+        if "android" in str(device.get("platform", "")).lower()
+    ]
+
+    if requested and requested.casefold() in {"android", "phone", "mobile", "android companion"}:
+        matches = android_devices
+    elif requested:
+        direct_matches = [
+            device
+            for device in android_devices
+            if requested.casefold() in {
+                str(device.get("device_id", "")).casefold(),
+                str(device.get("name", "")).casefold(),
+            }
+        ]
+        matches = direct_matches or [
+            device
+            for device in android_devices
+            if requested.casefold() in str(device.get("device_id", "")).casefold()
+            or requested.casefold() in str(device.get("name", "")).casefold()
+        ]
+        if not matches:
+            non_android_match = any(
+                requested.casefold() in str(device.get("device_id", "")).casefold()
+                or requested.casefold() in str(device.get("name", "")).casefold()
+                for device in devices
+            )
+            return {
+                "success": False,
+                "device": requested,
+                "action": action,
+                "error": (
+                    f"'{requested}' is not an Android companion."
+                    if non_android_match
+                    else f"No Android companion matches '{requested}'."
+                ),
+                "error_code": "UNSUPPORTED_DEVICE_PLATFORM" if non_android_match else "DEVICE_NOT_FOUND",
+            }
+    else:
+        matches = [device for device in android_devices if bool(device.get("online", False))]
+        if not matches:
+            if android_devices:
+                return {
+                    "success": False,
+                    "action": action,
+                    "error": "The paired Android companion is currently offline.",
+                    "error_code": "DEVICE_OFFLINE",
+                }
+            return {
+                "success": False,
+                "action": action,
+                "error": "No Android companion is paired with Brahma Connect.",
+                "error_code": "DEVICE_NOT_FOUND",
+            }
+
+    if len(matches) > 1:
+        return {
+            "success": False,
+            "device": requested or "android",
+            "action": action,
+            "error": "More than one Android companion matches; specify a device id or name.",
+            "error_code": "MULTIPLE_DEVICES",
+            "matches": [
+                {
+                    "device_id": device.get("device_id", ""),
+                    "name": device.get("name", "Unknown Device"),
+                    "online": bool(device.get("online", False)),
+                }
+                for device in matches
+            ],
+        }
+
+    device = matches[0]
+    device_name = str(device.get("name") or device.get("device_id") or "Android companion")
+    if not bool(device.get("online", False)):
+        return {
+            "success": False,
+            "device": device.get("device_id") or device_name,
+            "action": action,
+            "error": f"Your Android companion, {device_name}, is currently offline.",
+            "error_code": "DEVICE_OFFLINE",
+        }
+
+    device_target = str(device.get("device_id") or device_name)
+    try:
+        response = connect_execute(
+            {
+                "device": device_target,
+                "action": action,
+                "parameters": command_parameters,
+            },
+            player=player,
+        )
+        result = json.loads(response)
+        if not isinstance(result, dict):
+            raise ValueError("The RPC returned a non-object response.")
+        result.setdefault("device", device_target)
+        result.setdefault("action", action)
+        if "success" not in result:
+            result["success"] = False
+            result.setdefault("error", "The companion returned no execution status.")
+            result.setdefault("error_code", "INVALID_RPC_RESPONSE")
+        return result
+    except Exception as exc:
+        return {
+            "success": False,
+            "device": device_target,
+            "action": action,
+            "error": f"Android companion command failed: {exc}",
+            "error_code": "GATEWAY_UNAVAILABLE",
+        }

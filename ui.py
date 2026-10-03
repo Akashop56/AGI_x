@@ -29,11 +29,12 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Deque
 
-from core.user_paths import get_user_data_dir
+from core.user_paths import get_api_keys_path, get_user_data_dir
 
 BASE_DIR = Path(__file__).resolve().parent
 
 CONFIG_DIR = get_user_data_dir() / "config"
+API_KEYS_FILE = get_api_keys_path()
 APP_SETTINGS_FILE = CONFIG_DIR / "app_settings.json"
 DISCORD_SETTINGS_FILE = CONFIG_DIR / "discord_settings.json"
 LOG_DIR = get_user_data_dir() / "logs"
@@ -612,10 +613,10 @@ class HeadlessUI:
         key = (key or "").strip()
         if not key:
             return
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        data = _read_json(CONFIG_DIR / "api_keys.json")
+        API_KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        data = _read_json(API_KEYS_FILE)
         data["gemini_api_key"] = key
-        (CONFIG_DIR / "api_keys.json").write_text(json.dumps(data, indent=4), encoding="utf-8")
+        API_KEYS_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
         self._ready = True
         self._win._ready = True
         self.publish("api_key_ready", {"source": "runtime"})
@@ -658,10 +659,7 @@ def _read_gemini_api_key() -> str:
     env_key = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
     if env_key:
         return env_key
-    for candidate in (
-        CONFIG_DIR / "api_keys.json",
-        REPO_SETTINGS_FILE.parent / "api_keys.json",
-    ):
+    for candidate in (API_KEYS_FILE,):
         key = (_read_json(candidate).get("gemini_api_key") or "").strip()
         if key:
             return key

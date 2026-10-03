@@ -39,7 +39,7 @@ The script installs `python`, `clang`, `rust`, native image/XML libs and
 Any of these work:
 
 ```bash
-python main.py --set-key AIza...     # writes ~/BrahmaAI/config/api_keys.json
+python main.py --set-key AIza...     # writes <project>/config/api_keys.json
 export GEMINI_API_KEY=AIza...        # or put it in your shell profile
 ```
 

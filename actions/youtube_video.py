@@ -1,4 +1,4 @@
-from core.user_paths import get_user_data_dir
+from core.user_paths import get_api_keys_path
 #youtube_video.py
 import json
 import re
@@ -36,7 +36,7 @@ def _get_base_dir() -> Path:
 
 
 BASE_DIR        = _get_base_dir()
-API_CONFIG_PATH = get_user_data_dir() / "config" / "api_keys.json"
+API_CONFIG_PATH = get_api_keys_path()
 
 HEADERS = {
     "User-Agent": (

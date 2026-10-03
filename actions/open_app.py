@@ -6,6 +6,144 @@ import time
 import subprocess
 import platform
 import shutil
+import re
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from core import pc_compat
+from core.tool_result import ToolResult
+
+_ANDROID_APP_PACKAGES = {
+    "whatsapp": "com.whatsapp",
+    "chrome": "com.android.chrome",
+    "google chrome": "com.android.chrome",
+    "firefox": "org.mozilla.firefox",
+    "spotify": "com.spotify.music",
+    "discord": "com.discord",
+    "telegram": "org.telegram.messenger",
+    "instagram": "com.instagram.android",
+    "tiktok": "com.zhiliaoapp.musically",
+    "youtube": "com.google.android.youtube",
+}
+
+
+def _is_android() -> bool:
+    return pc_compat.is_android() or platform.system().lower() == "android"
+
+
+def _is_android_package_target(raw: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"(?:com|org|net|io|me|app|dev|edu|gov|in|co|tv|uk)\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*",
+            raw,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _is_url_target(value: str) -> bool:
+    raw = str(value or "").strip()
+    if not raw or _is_android_package_target(raw):
+        return False
+    scheme = urlsplit(raw).scheme.lower()
+    if scheme in {"http", "https", "mailto", "tel", "intent", "geo", "market", "file"}:
+        return True
+    if raw.lower().startswith("www."):
+        return True
+    return bool(re.match(r"^[\w.-]+\.[a-zA-Z]{2,}(?::\d+)?(?:[/?#]|$)", raw))
+
+
+def _is_file_target(value: str) -> bool:
+    raw = str(value or "").strip()
+    if not raw or _is_url_target(raw):
+        return False
+    candidate = Path(raw).expanduser()
+    return candidate.exists() or raw.startswith(("/", "./", "../", "~/"))
+
+
+def _companion_result(action: str, parameters: dict, player=None, target: str | None = None) -> dict:
+    try:
+        from actions.brahma_connect import execute_android_companion_action
+
+        return execute_android_companion_action(
+            action,
+            parameters,
+            player=player,
+            target=target,
+        )
+    except Exception as exc:
+        return {
+            "success": False,
+            "action": action,
+            "error": f"Brahma Connect is unavailable: {exc}",
+            "error_code": "GATEWAY_UNAVAILABLE",
+        }
+
+
+def _open_android_url_or_file(target: str, player=None, device: str | None = None) -> ToolResult:
+    raw = str(target or "").strip()
+    is_url = _is_url_target(raw)
+    is_file = _is_file_target(raw)
+    if not is_url and not is_file:
+        return ToolResult(
+            f"'{raw}' is not a URL or an existing file.",
+            success=False,
+            error_code="INVALID_LAUNCH_TARGET",
+        )
+
+    if is_file:
+        file_path = Path(raw).expanduser()
+        if not file_path.exists():
+            return ToolResult(
+                f"The file '{raw}' does not exist.",
+                success=False,
+                error_code="FILE_NOT_FOUND",
+            )
+        raw = str(file_path.resolve())
+    elif not urlsplit(raw).scheme:
+        raw = f"https://{raw}"
+
+    opener = shutil.which("termux-open")
+    opener_error = None
+    if opener:
+        try:
+            result = subprocess.run(
+                ["termux-open", raw],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if result.returncode == 0:
+                return ToolResult(f"Opened {raw}.", data={"opener": "termux-open", "target": raw})
+            opener_error = (result.stderr or result.stdout or "termux-open returned a non-zero status.").strip()
+        except Exception as exc:
+            opener_error = str(exc)
+
+    if is_url:
+        rpc_result = _companion_result("open_url", {"url": raw}, player=player, target=device)
+        if rpc_result.get("success"):
+            return ToolResult(
+                f"Opened {raw} on the Android companion.",
+                data=rpc_result,
+            )
+        detail = str(rpc_result.get("error") or opener_error or "No Android URL opener is available.")
+        return ToolResult(
+            f"Could not open {raw}: {detail}",
+            success=False,
+            error=detail,
+            error_code=str(rpc_result.get("error_code") or "URL_OPEN_FAILED"),
+            data=rpc_result,
+        )
+
+    detail = opener_error or "termux-open is not installed."
+    return ToolResult(
+        f"Could not open file {raw}: {detail}",
+        success=False,
+        error=detail,
+        error_code="TERMUX_OPENER_UNAVAILABLE" if not opener else "URL_OPEN_FAILED",
+    )
+
 
 try:
     import psutil
@@ -196,15 +334,17 @@ def _launch_linux(app_name: str) -> bool:
             pass
 
     try:
-        subprocess.run(["xdg-open", app_name], capture_output=True, timeout=5)
-        return True
+        result = subprocess.run(["xdg-open", app_name], capture_output=True, timeout=5, check=False)
+        if result.returncode == 0:
+            return True
     except Exception:
         pass
 
     try:
         desktop_name = app_name.lower().replace(" ", "-")
-        subprocess.run(["gtk-launch", desktop_name], capture_output=True, timeout=5)
-        return True
+        result = subprocess.run(["gtk-launch", desktop_name], capture_output=True, timeout=5, check=False)
+        if result.returncode == 0:
+            return True
     except Exception:
         pass
 
@@ -218,45 +358,108 @@ _OS_LAUNCHERS = {
 }
 
 
+
 def open_app(
     parameters=None,
     response=None,
     player=None,
     session_memory=None,
-) -> str:
-    app_name = (parameters or {}).get("app_name", "").strip()
+) -> ToolResult:
+    params = parameters if isinstance(parameters, dict) else {}
+    app_name = str(
+        params.get("app_name")
+        or params.get("url")
+        or params.get("file_path")
+        or params.get("path")
+        or ""
+    ).strip()
 
     if not app_name:
-        return "Please specify which application to open, sir."
-
-    system   = platform.system()
-    launcher = _OS_LAUNCHERS.get(system)
-
-    if launcher is None:
-        return f"Unsupported OS: {system}"
-
-    normalized = _normalize(app_name)
-    print(f"[open_app] 🚀 Launching: {app_name} → {normalized} ({system})")
-
-    if player:
-        player.write_log(f"[open_app] {app_name}")
-
-    try:
-        success = launcher(normalized)
-
-        if success:
-            return f"Opened {app_name} successfully, sir."
-
-        if normalized != app_name:
-            success = launcher(app_name)
-            if success:
-                return f"Opened {app_name} successfully, sir."
-
-        return (
-            f"I tried to open {app_name}, sir, but couldn't confirm it launched. "
-            f"It may still be loading or might not be installed."
+        return ToolResult(
+            "Please specify an application, URL, or file to open, sir.",
+            success=False,
+            error_code="MISSING_ARGUMENT",
         )
 
-    except Exception as e:
-        print(f"[open_app] ❌ {e}")
-        return f"Failed to open {app_name}, sir: {e}"
+    if player and hasattr(player, "write_log"):
+        try:
+            player.write_log(f"[open_app] {app_name}")
+        except Exception:
+            pass
+
+    if _is_android():
+        if _is_url_target(app_name) or _is_file_target(app_name):
+            return _open_android_url_or_file(
+                app_name,
+                player=player,
+                device=params.get("device") or params.get("target"),
+            )
+
+        package = str(
+            params.get("package")
+            or params.get("package_name")
+            or _ANDROID_APP_PACKAGES.get(app_name.casefold())
+            or ""
+        ).strip()
+        if not package and re.fullmatch(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+", app_name):
+            package = app_name
+
+        command_parameters = {"app_name": app_name}
+        if package:
+            command_parameters["package"] = package
+        rpc_result = _companion_result(
+            "launch_app",
+            command_parameters,
+            player=player,
+            target=params.get("device") or params.get("target"),
+        )
+        if rpc_result.get("success"):
+            device_name = rpc_result.get("device") or "Android companion"
+            return ToolResult(
+                f"Opened {app_name} on {device_name}.",
+                data=rpc_result,
+            )
+
+        detail = str(rpc_result.get("error") or "The companion did not confirm the app launch.")
+        return ToolResult(
+            f"I couldn't open {app_name} on Android: {detail}",
+            success=False,
+            error=detail,
+            error_code=str(rpc_result.get("error_code") or "APP_LAUNCH_FAILED"),
+            data=rpc_result,
+        )
+
+    system = platform.system()
+    launcher = _OS_LAUNCHERS.get(system)
+    normalized = _normalize(app_name)
+    if launcher is None:
+        return ToolResult(
+            f"Unsupported OS: {system}",
+            success=False,
+            error_code="UNSUPPORTED_OS",
+        )
+
+    print(f"[open_app] 🚀 Launching: {app_name} → {normalized} ({system})")
+    try:
+        success = launcher(normalized)
+        if not success and normalized != app_name:
+            success = launcher(app_name)
+
+        if success:
+            return ToolResult(f"Opened {app_name} successfully, sir.")
+
+        return ToolResult(
+            f"I tried to open {app_name}, sir, but couldn't confirm it launched. "
+            "It may still be loading or might not be installed.",
+            success=False,
+            error_code="APP_LAUNCH_FAILED",
+        )
+
+    except Exception as exc:
+        print(f"[open_app] ❌ {exc}")
+        return ToolResult(
+            f"Failed to open {app_name}, sir: {exc}",
+            success=False,
+            error=str(exc),
+            error_code="APP_LAUNCH_FAILED",
+        )

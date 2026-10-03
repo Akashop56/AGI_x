@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from core import pc_compat
+from core.tool_result import ToolResult
 
 # Playwright ships desktop browser binaries; keep the module importable and
 # report the capability instead of crashing the brain at import time.
@@ -18,6 +19,149 @@ else:  # pragma: no cover - Android/Termux path
 
     class PlaywrightTimeout(Exception):
         pass
+
+
+def _is_android() -> bool:
+    return pc_compat.is_android() or platform.system().lower() == "android"
+
+
+def _open_android_url(url: str, player=None, device: str | None = None) -> ToolResult:
+    opener = shutil.which("termux-open")
+    opener_error = None
+    if opener:
+        try:
+            result = subprocess.run(
+                ["termux-open", url],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if result.returncode == 0:
+                return ToolResult(f"Opened: {url}", data={"opener": "termux-open", "url": url})
+            opener_error = (result.stderr or result.stdout or "termux-open returned a non-zero status.").strip()
+        except Exception as exc:
+            opener_error = str(exc)
+
+    try:
+        from actions.brahma_connect import execute_android_companion_action
+
+        rpc_result = execute_android_companion_action(
+            "open_url",
+            {"url": url},
+            player=player,
+            target=device,
+        )
+    except Exception as exc:
+        rpc_result = {
+            "success": False,
+            "action": "open_url",
+            "error": f"Brahma Connect is unavailable: {exc}",
+            "error_code": "GATEWAY_UNAVAILABLE",
+        }
+    if rpc_result.get("success"):
+        return ToolResult(
+            f"Opened: {url} on the Android companion",
+            data=rpc_result,
+        )
+
+    detail = str(rpc_result.get("error") or opener_error or "No Android URL opener is available.")
+    return ToolResult(
+        f"Could not open {url}: {detail}",
+        success=False,
+        error=detail,
+        error_code=str(rpc_result.get("error_code") or "URL_OPEN_FAILED"),
+        data=rpc_result,
+    )
+
+
+def _browser_control_android(parameters: dict, player=None) -> ToolResult:
+    action = str(parameters.get("action", "")).lower().strip()
+    url = str(parameters.get("url", "") or "").strip()
+    device = parameters.get("device") or parameters.get("target")
+
+    if action == "search":
+        from urllib.parse import quote_plus
+
+        query = str(parameters.get("query", "") or "").strip()
+        if not query:
+            return ToolResult(
+                "Please provide a search query.",
+                success=False,
+                error_code="MISSING_ARGUMENT",
+            )
+        engine = str(parameters.get("engine", "google") or "google").lower()
+        search_urls = {
+            "google": "https://www.google.com/search?q=",
+            "bing": "https://www.bing.com/search?q=",
+            "duckduckgo": "https://duckduckgo.com/?q=",
+        }
+        url = search_urls.get(engine, search_urls["google"]) + quote_plus(query)
+    elif action in {"go_to", "navigate"} and not url and parameters.get("query"):
+        return _browser_control_android({**parameters, "action": "search"}, player=player)
+    elif action in {"open_tab", "new_tab"} and not url:
+        return ToolResult(
+            "Please provide a URL to open.",
+            success=False,
+            error_code="MISSING_ARGUMENT",
+        )
+    elif action not in {"go_to", "navigate", "open_tab", "new_tab"}:
+        return ToolResult(
+            "Interactive browser automation is not available on Android. Brahma can open or search for a link, but cannot control page elements.",
+            success=False,
+            error_code="INTERACTIVE_AUTOMATION_UNAVAILABLE",
+        )
+
+    if not url:
+        return ToolResult(
+            "Please provide a URL to open.",
+            success=False,
+            error_code="MISSING_ARGUMENT",
+        )
+    if not url.lower().startswith(("http://", "https://", "mailto:", "tel:", "intent:")):
+        url = "https://" + url
+    return _open_android_url(url, player=player, device=device)
+
+def _as_tool_result(result) -> ToolResult:
+    if isinstance(result, ToolResult):
+        return result
+    if isinstance(result, dict) and "success" in result:
+        success = bool(result.get("success"))
+        message = str(result.get("message") or result.get("error") or result)
+        return ToolResult(
+            message,
+            success=success,
+            error=str(result.get("error")) if result.get("error") is not None else None,
+            error_code=str(result.get("error_code")) if result.get("error_code") else None,
+            data=result.get("data"),
+        )
+
+    message = str(result or "").strip()
+    error_prefixes = (
+        "browser error:",
+        "navigation error:",
+        "timeout loading:",
+        "click error:",
+        "type error:",
+        "scroll error:",
+        "key error:",
+        "back error:",
+        "forward error:",
+        "reload error:",
+        "could not ",
+        "element not found",
+        "no selector",
+        "unknown action",
+        "legacy fallback could not",
+        "error:",
+    )
+    failed = not message or message.casefold().startswith(error_prefixes)
+    return ToolResult(
+        message or "Browser action returned no result.",
+        success=not failed,
+        error=message if failed else None,
+        error_code="BROWSER_ACTION_FAILED" if failed else None,
+    )
 
 
 def _log(message: str) -> None:
@@ -540,7 +684,7 @@ def browser_control(
     response=None,
     player=None,
     session_memory=None
-) -> str:
+) -> ToolResult:
     """
     Complete browser automation powered by Microsoft Playwright MCP (@playwright/mcp),
     with automatic failover to the built-in Playwright thread.
@@ -570,16 +714,25 @@ def browser_control(
     """
     import time
 
+    parameters = parameters or {}
+    action = str(parameters.get("action", "")).lower().strip()
+
+    if _is_android():
+        return _browser_control_android(parameters, player=player)
+
     if async_playwright is None:
-        # Android/Termux: the companion app opens URLs; there is no browser engine here.
-        return pc_compat.unavailable(
+        message = pc_compat.unavailable(
             "Browser automation",
-            detail="Ask the companion app to open the link instead.",
+            detail="Interactive browser automation requires a supported desktop browser engine.",
+        )
+        return ToolResult(
+            message,
+            success=False,
+            error=message,
+            error_code="BROWSER_AUTOMATION_UNAVAILABLE",
         )
 
     from actions.playwright_mcp_client import get_playwright_mcp_client
-
-    action = (parameters or {}).get("action", "").lower().strip()
     result = "Unknown action."
 
     # Try Microsoft Playwright MCP first
@@ -782,4 +935,4 @@ def browser_control(
     if player and hasattr(player, "write_log"):
         player.write_log(f"[browser] {safe_res[:80]}")
 
-    return result
+    return _as_tool_result(result)

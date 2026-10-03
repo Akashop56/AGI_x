@@ -41,7 +41,7 @@ def _client_for(api_key: str | None = None):
     if not key:
         raise RuntimeError(
             "No Gemini API key configured. Call genai.configure(api_key=...) "
-            "or add ~/BrahmaAI/config/api_keys.json first."
+            "or add config/api_keys.json in the active Brahma project first."
         )
     if _client is None or api_key:
         from google import genai as _genai  # modern SDK

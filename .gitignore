@@ -17,6 +17,7 @@ config/api_keys.json
 *.log
 FATAL_CRASH.log
 BrahmaAI/
+workspace/
 *.sqlite3
 *.db
 

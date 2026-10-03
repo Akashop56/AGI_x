@@ -1,15 +1,14 @@
 from __future__ import annotations
-from core.user_paths import get_user_data_dir
 
 import json
 from pathlib import Path
 from typing import Any
 
+from core.user_paths import get_user_data_dir, get_workspace_dir
 from actions.brahma_dev_agent import run_dev_agent
 from actions.dev_agent import dev_agent
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent
 SETTINGS_PATH = get_user_data_dir() / "config" / "app_settings.json"
 
 
@@ -26,25 +25,20 @@ def _load_settings() -> dict[str, Any]:
 
 def _selected_workspace(parameters: dict[str, Any]) -> str:
     settings = _load_settings()
-    configured = str(settings.get("developer_mode_workspace", "") or "").strip()
-    if configured:
-        return configured
-    return str(
+    configured = (
         parameters.get("workspace_path")
         or parameters.get("project_dir")
         or parameters.get("output_dir")
-        or ""
-    ).strip()
+        or settings.get("developer_mode_workspace")
+    )
+    return str(get_workspace_dir(configured))
 
 
 def run_developer_mode_request(parameters: dict[str, Any], speak=None) -> str:
     params = dict(parameters or {})
     description = str(params.get("description") or params.get("brief") or "").strip()
     workspace = _selected_workspace(params)
-
-    if not workspace:
-        workspace = str(Path.home() / "Desktop" / "BrahmaProjects")
-        Path(workspace).mkdir(parents=True, exist_ok=True)
+    Path(workspace).mkdir(parents=True, exist_ok=True)
 
     params["workspace_path"] = workspace
     params["output_dir"] = workspace
@@ -57,4 +51,3 @@ def run_developer_mode_request(parameters: dict[str, Any], speak=None) -> str:
         params.setdefault("language", params.get("language") or "python")
         params.setdefault("project_name", params.get("project_name") or "brahma_project")
         return dev_agent(params, player=None, speak=speak)
-
