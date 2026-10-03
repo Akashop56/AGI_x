@@ -18,6 +18,7 @@
         </intent>
     </queries>
 
+    <!-- The local Brahma gateway uses ws:// on localhost and trusted LANs. -->
     <application
         android:name=".BrahmaConnectApplication"
         android:allowBackup="false"

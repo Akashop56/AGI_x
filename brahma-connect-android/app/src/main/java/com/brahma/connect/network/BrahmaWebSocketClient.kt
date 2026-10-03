@@ -1,7 +1,9 @@
 package com.brahma.connect.network
 
 import android.content.Context
-import android.os.SystemClock
+import android.os.Handler
+import android.os.Looper
+import com.brahma.connect.audio.PhoneAudioEngine
 import com.brahma.connect.commands.DeviceCommandHandler
 import com.brahma.connect.core.AgentStateStore
 import com.brahma.connect.core.BrahmaProtocol
@@ -11,14 +13,12 @@ import com.brahma.connect.core.DeviceCredential
 import com.brahma.connect.core.DeviceSnapshot
 import com.brahma.connect.core.GatewayEndpoint
 import com.brahma.connect.core.PairingOffer
-import com.brahma.connect.audio.PhoneAudioEngine
 import com.brahma.connect.pairing.PairingStorage
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
-import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 import kotlin.math.min
@@ -28,78 +28,293 @@ class BrahmaWebSocketClient(
     private val storage: PairingStorage,
     private val commandHandler: DeviceCommandHandler,
 ) {
+    companion object {
+        private const val CONNECT_TIMEOUT_SECONDS = 15L
+        private const val CONNECT_TIMEOUT_MS = CONNECT_TIMEOUT_SECONDS * 1_000L
+        private const val MAX_RECONNECT_DELAY_MS = 30_000L
+    }
+
     /** Registered by the foreground service once the user granted RECORD_AUDIO. */
     var audioEngine: PhoneAudioEngine? = null
     /** Optional UI bridge (used to surface headless UI events in the app). */
     var onUiEvent: ((String, JSONObject) -> Unit)? = null
+
+    /*
+     * WebSocket read timeouts are deliberately disabled: a connected gateway is
+     * long-lived and is kept alive by OkHttp's ping interval.  The explicit
+     * connect watchdog below still makes a stalled initial handshake visible to
+     * the user instead of leaving the visualizer in CONNECTING forever.
+     */
     private val client = OkHttpClient.Builder()
         .retryOnConnectionFailure(true)
+        .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .writeTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(30, TimeUnit.SECONDS)
         .build()
 
-    private var socket: WebSocket? = null
-    private var currentEndpoint: GatewayEndpoint? = null
-    private var currentOffer: PairingOffer? = null
-    private var currentCredential: DeviceCredential? = null
-    private var manualDisconnect = false
-    private var reconnectAttempt = 0
-    private var lastConnectUptime = 0L
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val connectionLock = Any()
 
-    fun connect(endpoint: GatewayEndpoint, credential: DeviceCredential? = storage.loadCredential(), offer: PairingOffer? = null) {
-        if (socket != null && currentEndpoint == endpoint) {
-            currentCredential = credential ?: currentCredential
-            currentOffer = offer ?: currentOffer
-            AgentStateStore.setGateway(endpoint)
-            return
+    @Volatile
+    private var socket: WebSocket? = null
+    @Volatile
+    private var currentEndpoint: GatewayEndpoint? = null
+    @Volatile
+    private var currentOffer: PairingOffer? = null
+    @Volatile
+    private var currentCredential: DeviceCredential? = null
+    @Volatile
+    private var manualDisconnect = false
+    @Volatile
+    private var reconnectAttempt = 0
+
+    /** Monotonically increasing token used to ignore callbacks from old sockets. */
+    @Volatile
+    private var connectionAttempt = 0L
+    private var handledAttempt = -1L
+    private var connectTimeoutTask: Runnable? = null
+    private var reconnectTask: Runnable? = null
+
+    fun connect(
+        endpoint: GatewayEndpoint,
+        credential: DeviceCredential? = storage.loadCredential(),
+        offer: PairingOffer? = null,
+    ) {
+        var oldSocket: WebSocket? = null
+        var attempt = 0L
+
+        synchronized(connectionLock) {
+            if (socket != null && currentEndpoint == endpoint && !manualDisconnect) {
+                currentCredential = credential ?: currentCredential
+                currentOffer = offer ?: currentOffer
+                AgentStateStore.setGateway(endpoint)
+                return
+            }
+
+            currentEndpoint = endpoint
+            currentCredential = credential
+            currentOffer = offer
+            manualDisconnect = false
+            reconnectAttempt = 0
+            connectionAttempt += 1
+            attempt = connectionAttempt
+            handledAttempt = -1L
+            oldSocket = socket
+            socket = null
         }
-        currentEndpoint = endpoint
-        currentCredential = credential
-        currentOffer = offer
-        manualDisconnect = false
-        reconnectAttempt = 0
-        lastConnectUptime = SystemClock.elapsedRealtime()
+
+        cancelConnectTimeout()
+        cancelReconnect()
+        oldSocket?.close(1000, "Reconnecting")
+
         AgentStateStore.setGateway(endpoint)
         AgentStateStore.setConnectionState(ConnectionState.CONNECTING)
         AgentStateStore.setStatus("Connecting to ${endpoint.name}")
+        AgentStateStore.setError(null)
 
-        socket?.close(1000, "Reconnecting")
-        socket = client.newWebSocket(
-            Request.Builder().url("ws://${endpoint.host}:${endpoint.port}/ws").build(),
-            BrahmaSocketListener(),
-        )
+        val request = runCatching {
+            Request.Builder()
+                .url(webSocketUrl(endpoint))
+                .build()
+        }.getOrElse { error ->
+            handleConnectionFailure(
+                attempt = attempt,
+                webSocket = null,
+                message = "Invalid gateway address ${endpoint.host}:${endpoint.port}: ${error.safeMessage()}",
+            )
+            return
+        }
+
+        // OkHttp normally reports a failed TCP/TLS handshake, but a blocked or
+        // unreachable local address can still leave a request pending.  This
+        // watchdog guarantees a visible error and schedules a bounded retry.
+        scheduleConnectTimeout(attempt, endpoint)
+        val listener = BrahmaSocketListener(attempt)
+        val newSocket = runCatching { client.newWebSocket(request, listener) }.getOrElse { error ->
+            handleConnectionFailure(
+                attempt = attempt,
+                webSocket = null,
+                message = formatFailure(endpoint, error, null),
+            )
+            return
+        }
+
+        synchronized(connectionLock) {
+            if (attempt == connectionAttempt && !manualDisconnect && handledAttempt != attempt) {
+                socket = newSocket
+            } else {
+                // The user may have disconnected while newWebSocket was being
+                // scheduled. Do not allow this stale socket to reconnect.
+                newSocket.cancel()
+            }
+        }
     }
 
     fun disconnect() {
-        manualDisconnect = true
+        val activeSocket: WebSocket?
+        synchronized(connectionLock) {
+            manualDisconnect = true
+            connectionAttempt += 1
+            handledAttempt = connectionAttempt
+            activeSocket = socket
+            socket = null
+        }
+        cancelConnectTimeout()
+        cancelReconnect()
         audioEngine?.stop()
-        socket?.close(1000, "Disconnected by user")
-        socket = null
+        activeSocket?.close(1000, "Disconnected by user")
         AgentStateStore.setConnectionState(ConnectionState.DISCONNECTED)
         AgentStateStore.setStatus("Disconnected")
+        AgentStateStore.setError(null)
     }
 
-    private fun reconnectLater() {
-        if (manualDisconnect) return
+    private fun scheduleConnectTimeout(attempt: Long, endpoint: GatewayEndpoint) {
+        cancelConnectTimeout()
+        val timeoutTask = Runnable {
+            if (isCurrentAttempt(attempt)) {
+                val activeSocket = socket
+                val handled = handleConnectionFailure(
+                    attempt = attempt,
+                    webSocket = activeSocket,
+                    message = "Connection timed out while reaching ${endpoint.host}:${endpoint.port}.",
+                )
+                if (handled) activeSocket?.cancel()
+            }
+        }
+        connectTimeoutTask = timeoutTask
+        mainHandler.postDelayed(timeoutTask, CONNECT_TIMEOUT_MS)
+    }
+
+    private fun cancelConnectTimeout() {
+        connectTimeoutTask?.let(mainHandler::removeCallbacks)
+        connectTimeoutTask = null
+    }
+
+    private fun cancelReconnect() {
+        reconnectTask?.let(mainHandler::removeCallbacks)
+        reconnectTask = null
+    }
+
+    private fun reconnectLater(attempt: Long) {
         val endpoint = currentEndpoint ?: return
-        reconnectAttempt += 1
+        val delayMs: Long
+        val task: Runnable
+        synchronized(connectionLock) {
+            if (manualDisconnect || attempt != connectionAttempt || reconnectTask != null) return
+            reconnectAttempt += 1
+            delayMs = min(MAX_RECONNECT_DELAY_MS, 1_000L * (1 shl min(reconnectAttempt, 5)))
+            task = Runnable {
+                val shouldReconnect = synchronized(connectionLock) {
+                    reconnectTask = null
+                    !manualDisconnect && attempt == connectionAttempt
+                }
+                if (shouldReconnect) {
+                    connect(endpoint, currentCredential, currentOffer)
+                }
+            }
+            reconnectTask = task
+        }
+
         AgentStateStore.setConnectionState(ConnectionState.RECONNECTING)
-        val delayMs = min(30_000L, 1_000L * (1 shl min(reconnectAttempt, 5)))
         AgentStateStore.setStatus("Reconnecting in ${delayMs / 1000}s")
-        Thread {
-            try {
-                Thread.sleep(delayMs)
-            } catch (_: InterruptedException) {
-                return@Thread
-            }
-            if (!manualDisconnect && currentEndpoint == endpoint) {
-                connect(endpoint, currentCredential, currentOffer)
-            }
-        }.start()
+        mainHandler.postDelayed(task, delayMs)
     }
 
-    private fun send(json: JSONObject) {
-        socket?.send(json.toString())
+    /**
+     * Mark an attempt as failed exactly once. OkHttp can report both a close
+     * and a failure around cancellation, so the attempt token prevents stale
+     * callbacks from overwriting a newer connection's state.
+     */
+    private fun handleConnectionFailure(attempt: Long, webSocket: WebSocket?, message: String): Boolean {
+        val accepted = synchronized(connectionLock) {
+            if (manualDisconnect || attempt != connectionAttempt || handledAttempt == attempt) {
+                false
+            } else {
+                handledAttempt = attempt
+                if (webSocket == null || socket === webSocket) socket = null
+                true
+            }
+        }
+        if (!accepted) return false
+
+        cancelConnectTimeout()
+        AgentStateStore.addLog(message)
+        AgentStateStore.setConnectionState(ConnectionState.DISCONNECTED)
+        AgentStateStore.setStatus("Connection failed")
+        AgentStateStore.setError(message)
+        reconnectLater(attempt)
+        return true
     }
+
+    private fun isCurrentAttempt(attempt: Long): Boolean = synchronized(connectionLock) {
+        !manualDisconnect && attempt == connectionAttempt && handledAttempt != attempt
+    }
+
+    private fun isCurrentSocket(webSocket: WebSocket, attempt: Long): Boolean = synchronized(connectionLock) {
+        !manualDisconnect &&
+            attempt == connectionAttempt &&
+            handledAttempt != attempt &&
+            (socket == null || socket === webSocket)
+    }
+
+    private fun webSocketUrl(endpoint: GatewayEndpoint): String {
+        // NSD can return an IPv6 literal. Bracket it so Request.Builder parses
+        // it correctly; IPv4 addresses such as 127.0.0.1 remain unchanged.
+        val host = endpoint.host.trim()
+        val formattedHost = if (host.contains(":") && !host.startsWith("[")) "[$host]" else host
+        return "ws://$formattedHost:${endpoint.port}/ws"
+    }
+
+    private fun send(json: JSONObject): Boolean {
+        val activeSocket = socket
+        if (activeSocket == null) {
+            reportTransportError("Cannot send to the gateway: the WebSocket is not connected.")
+            return false
+        }
+
+        return try {
+            if (activeSocket.send(json.toString())) {
+                true
+            } else {
+                reportTransportError("The gateway rejected a WebSocket message.")
+                false
+            }
+        } catch (error: Throwable) {
+            reportTransportError("Could not send to the gateway: ${error.safeMessage()}")
+            false
+        }
+    }
+
+    private fun reportTransportError(message: String) {
+        AgentStateStore.addLog(message)
+        AgentStateStore.setError(message)
+        AgentStateStore.setStatus("Gateway unavailable")
+    }
+
+    private fun formatFailure(
+        endpoint: GatewayEndpoint,
+        error: Throwable,
+        response: okhttp3.Response?,
+    ): String {
+        val detail = error.safeMessage()
+        val responseDetail = response?.let {
+            "HTTP ${it.code}${it.message.takeIf(String::isNotBlank)?.let { message -> " $message" } ?: ""}"
+        }
+        val cleartextHint = if (detail.contains("cleartext", ignoreCase = true)) {
+            " Android blocked cleartext traffic; verify that the app manifest allows local ws:// connections."
+        } else {
+            ""
+        }
+        return buildString {
+            append("Unable to connect to ${endpoint.host}:${endpoint.port}. ")
+            append(responseDetail ?: detail)
+            append(cleartextHint)
+        }
+    }
+
+    private fun Throwable.safeMessage(): String = message?.trim().takeUnless { it.isNullOrBlank() }
+        ?: javaClass.simpleName.ifBlank { "Unknown network error" }
 
     private fun batterySnapshot(): Pair<Int, Boolean> {
         val battery = commandHandler.handle("get_battery", emptyMap()).data
@@ -140,8 +355,9 @@ class BrahmaWebSocketClient(
     }
 
     private fun sendHello() {
-        send(BrahmaProtocol.hello(buildSnapshot()))
-        AgentStateStore.setStatus("Awaiting approval")
+        if (send(BrahmaProtocol.hello(buildSnapshot()))) {
+            AgentStateStore.setStatus("Awaiting approval")
+        }
     }
 
     private fun sendPairRequest() {
@@ -152,8 +368,9 @@ class BrahmaWebSocketClient(
         val snapshot = buildSnapshot().toJson()
             .put("pairing_token", offer.pairingToken)
             .put("pairing_code", offer.pairingCode)
-        send(BrahmaProtocol.envelope(BrahmaProtocol.PAIR_REQUEST, snapshot))
-        AgentStateStore.setStatus("Pairing request sent")
+        if (send(BrahmaProtocol.envelope(BrahmaProtocol.PAIR_REQUEST, snapshot))) {
+            AgentStateStore.setStatus("Pairing request sent")
+        }
     }
 
     private fun sendAuthenticate() {
@@ -163,8 +380,9 @@ class BrahmaWebSocketClient(
             return
         }
         currentCredential = credential
-        send(BrahmaProtocol.authenticate(credential))
-        AgentStateStore.setStatus("Authenticating")
+        if (send(BrahmaProtocol.authenticate(credential))) {
+            AgentStateStore.setStatus("Authenticating")
+        }
     }
 
     private fun handleCommandMessage(root: JSONObject) {
@@ -206,21 +424,38 @@ class BrahmaWebSocketClient(
         sendAuthenticate()
     }
 
-    private inner class BrahmaSocketListener : WebSocketListener() {
+    private inner class BrahmaSocketListener(
+        private val attempt: Long,
+    ) : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
-            socket = webSocket
+            if (!isCurrentSocket(webSocket, attempt)) {
+                webSocket.close(1000, "Stale connection")
+                return
+            }
+            synchronized(connectionLock) {
+                if (attempt == connectionAttempt) socket = webSocket
+            }
+            cancelConnectTimeout()
             reconnectAttempt = 0
             AgentStateStore.setConnectionState(ConnectionState.CONNECTING)
-            if (currentCredential != null || storage.loadCredential() != null) {
-                sendAuthenticate()
-            } else if (currentOffer != null) {
-                sendPairRequest()
-            } else {
-                sendHello()
+            AgentStateStore.setError(null)
+            runCatching {
+                val storedCredential = storage.loadCredential()
+                if (currentCredential != null || storedCredential != null) {
+                    sendAuthenticate()
+                } else if (currentOffer != null) {
+                    sendPairRequest()
+                } else {
+                    sendHello()
+                }
+            }.onFailure { error ->
+                val message = "Could not initialize the gateway handshake: ${error.safeMessage()}"
+                if (handleConnectionFailure(attempt, webSocket, message)) webSocket.cancel()
             }
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            if (!isCurrentSocket(webSocket, attempt)) return
             runCatching {
                 val root = JSONObject(text)
                 val type = root.optString("type")
@@ -232,16 +467,28 @@ class BrahmaWebSocketClient(
                     BrahmaProtocol.DEVICE_ONLINE -> {
                         AgentStateStore.setConnectionState(ConnectionState.CONNECTED)
                         AgentStateStore.setStatus("Connected")
+                        AgentStateStore.setError(null)
                     }
                     BrahmaProtocol.CAPABILITIES -> {
                         AgentStateStore.addLog("Capabilities synced")
                     }
                     BrahmaProtocol.EXECUTE -> handleCommandMessage(root)
                     BrahmaProtocol.PING -> {
-                        send(BrahmaProtocol.envelope(BrahmaProtocol.PONG, JSONObject().put("status", "ok"), requestId = root.optString("request_id")))
+                        send(
+                            BrahmaProtocol.envelope(
+                                BrahmaProtocol.PONG,
+                                JSONObject().put("status", "ok"),
+                                requestId = root.optString("request_id"),
+                            )
+                        )
                     }
                     BrahmaProtocol.ERROR -> {
-                        AgentStateStore.setError(root.optJSONObject("payload")?.optString("error"))
+                        val error = root.optJSONObject("payload")?.optString("error")
+                            ?.takeIf { it.isNotBlank() }
+                            ?: "The gateway returned an error."
+                        AgentStateStore.addLog("Gateway error: $error")
+                        AgentStateStore.setStatus("Gateway error")
+                        AgentStateStore.setError(error)
                     }
                     BrahmaProtocol.CHAT_MESSAGE -> {
                         val payload = root.optJSONObject("payload") ?: return
@@ -255,7 +502,10 @@ class BrahmaWebSocketClient(
                     BrahmaProtocol.EVENT -> handleEvent(root)
                 }
             }.onFailure {
-                AgentStateStore.setError(it.message)
+                val message = "Invalid message from gateway: ${it.safeMessage()}"
+                AgentStateStore.addLog(message)
+                AgentStateStore.setStatus("Gateway message error")
+                AgentStateStore.setError(message)
             }
         }
 
@@ -264,19 +514,20 @@ class BrahmaWebSocketClient(
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            socket = null
-            AgentStateStore.addLog("Socket closed: $code $reason")
-            AgentStateStore.setConnectionState(ConnectionState.DISCONNECTED)
-            AgentStateStore.setStatus("Disconnected")
-            reconnectLater()
+            if (!isCurrentSocket(webSocket, attempt)) return
+            val detail = "Gateway closed the connection (code $code${reason.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""})."
+            handleConnectionFailure(attempt, webSocket, detail)
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
-            socket = null
-            AgentStateStore.addLog("Socket failure: ${t.message}")
-            AgentStateStore.setConnectionState(ConnectionState.DISCONNECTED)
-            AgentStateStore.setStatus("Connection failed")
-            reconnectLater()
+            if (!isCurrentSocket(webSocket, attempt)) return
+            val endpoint = currentEndpoint
+            val message = if (endpoint == null) {
+                "WebSocket connection failed: ${t.safeMessage()}"
+            } else {
+                formatFailure(endpoint, t, response)
+            }
+            handleConnectionFailure(attempt, webSocket, message)
         }
     }
 
@@ -341,8 +592,7 @@ class BrahmaWebSocketClient(
         val timestamp = System.currentTimeMillis()
         val pending = ChatMessage(msgId, "user", text, timestamp, "Sending...")
         AgentStateStore.addChatMessage(pending)
-        send(payload)
-        val sent = pending.copy(status = "Sent")
-        AgentStateStore.addChatMessage(sent)
+        val sent = send(payload)
+        AgentStateStore.addChatMessage(pending.copy(status = if (sent) "Sent" else "Failed"))
     }
 }
