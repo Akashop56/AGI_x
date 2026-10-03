@@ -1,4 +1,5 @@
-from core.user_paths import get_api_keys_path
+from core.user_paths import get_api_keys_path, get_workspace_dir
+from core.tool_result import ToolResult
 import json
 import re
 import sys
@@ -225,7 +226,12 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None, player: Any 
 
     elif tool == "open_app":
         from actions.open_app import open_app
-        return open_app(parameters=parameters, player=player) or "Done."
+        result = open_app(parameters=parameters, player=player)
+        return result if result is not None else ToolResult(
+            "App launcher returned no execution result.",
+            success=False,
+            error_code="EMPTY_RESULT",
+        )
 
     elif tool == "web_search":
         from actions.web_search import web_search
@@ -238,7 +244,12 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None, player: Any 
         p = dict(parameters or {})
         if tool.startswith("browser_"):
             p.setdefault("action", tool.replace("browser_", ""))
-        return browser_control(parameters=p, player=player) or "Done."
+        result = browser_control(parameters=p, player=player)
+        return result if result is not None else ToolResult(
+            "Browser control returned no execution result.",
+            success=False,
+            error_code="EMPTY_RESULT",
+        )
 
     elif tool == "file_controller":
         from actions.file_controller import file_controller
@@ -251,7 +262,7 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None, player: Any 
     elif tool == "claude_code":
         from actions.claude_code_bridge import run_developer_mode_request
         claude_parameters = dict(parameters or {})
-        claude_parameters.setdefault("workspace_path", str(Path.cwd()))
+        claude_parameters.setdefault("workspace_path", str(get_workspace_dir()))
         return run_developer_mode_request(claude_parameters, speak=speak)
 
     elif tool == "screen_process":
@@ -300,8 +311,9 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None, player: Any 
         if not description:
             raise ValueError("generated_code requires a 'description' parameter.")
         from actions.claude_code_bridge import run_developer_mode_request
+        workspace = parameters.get("workspace_path") or parameters.get("output_dir") or get_workspace_dir()
         return run_developer_mode_request(
-            {"description": description, "workspace_path": str(Path.cwd())},
+            {"description": description, "workspace_path": str(workspace)},
             speak=speak,
         )
 
@@ -534,7 +546,11 @@ class AgentExecutor:
                         break
                     try:
                         result = _call_tool(tool, params, speak, player=player)
-                        step_results[step_num] = result 
+                        if isinstance(result, dict) and result.get("success") is False:
+                            raise RuntimeError(str(result.get("error") or result.get("message") or "Tool reported failure."))
+                        if getattr(result, "success", None) is False:
+                            raise RuntimeError(str(getattr(result, "error", None) or result))
+                        step_results[step_num] = result
                         completed_steps.append(step)
                         print(f"[Executor] ✅ Step {step_num} done: {str(result)[:100]}")
                         step_ok = True
@@ -583,9 +599,11 @@ class AgentExecutor:
                             continue
 
                         elif decision == ErrorDecision.SKIP:
-                            print(f"[Executor] ⏭️ Skipping step {step_num}")
-                            completed_steps.append(step)
-                            step_ok = True
+                            print(f"[Executor] ⏭️ Step {step_num} was skipped after a tool failure")
+                            failed_step = step
+                            failed_error = error_msg
+                            success = False
+                            step_ok = False
                             break
 
                         elif decision == ErrorDecision.ABORT:
@@ -605,6 +623,10 @@ class AgentExecutor:
                                         speak,
                                         player=player
                                     )
+                                    if isinstance(res, dict) and res.get("success") is False:
+                                        raise RuntimeError(str(res.get("error") or res.get("message") or "Tool reported failure."))
+                                    if getattr(res, "success", None) is False:
+                                        raise RuntimeError(str(getattr(res, "error", None) or res))
                                     step_results[step_num] = res
                                     completed_steps.append(step)
                                     step_ok = True

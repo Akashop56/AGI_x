@@ -17,6 +17,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from core.user_paths import get_api_keys_path
+
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -67,19 +69,11 @@ def _open_file(path: Path) -> None:
 
 
 def _get_api_key() -> str:
-    candidates = [
-        Path(__file__).resolve().parent.parent / "config" / "api_keys.json",
-        Path.cwd() / "config" / "api_keys.json",
-    ]
-    for cp in candidates:
-        if cp.exists():
-            try:
-                data = json.loads(cp.read_text(encoding="utf-8"))
-                if "gemini_api_key" in data:
-                    return data["gemini_api_key"]
-            except Exception:
-                pass
-    return ""
+    try:
+        data = json.loads(get_api_keys_path().read_text(encoding="utf-8"))
+        return str(data.get("gemini_api_key") or "")
+    except Exception:
+        return ""
 
 
 def _parse_json_arg(value, fallback):

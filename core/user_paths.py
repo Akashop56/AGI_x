@@ -39,7 +39,7 @@ def get_user_data_dir() -> Path:
 
 
 def get_workspace_dir(configured: str | os.PathLike[str] | None = None) -> Path:
-    """Resolve a configured workspace or choose a portable per-user default.
+    """Resolve a configured workspace or use the active project's workspace.
 
     Relative workspace values are anchored to the project root instead of the
     process working directory. Stale Windows paths from a settings file are
@@ -59,4 +59,4 @@ def get_workspace_dir(configured: str | os.PathLike[str] | None = None) -> Path:
             path = get_project_root() / path
         return path.resolve()
 
-    return (Path.home() / "BrahmaProjects").resolve()
+    return (get_project_root() / "workspace").resolve()

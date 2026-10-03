@@ -1,4 +1,5 @@
 from core.user_paths import get_api_keys_path, get_user_data_dir, get_workspace_dir
+from core.tool_result import ToolResult
 from core import pc_compat
 import os
 
@@ -847,16 +848,24 @@ TOOL_DECLARATIONS = [
     {
         "name": "open_app",
         "description": (
-            "Opens any application on the Windows computer. "
-            "Use this whenever the user asks to open, launch, or start any app, "
-            "website, or program. Always call this tool — never just say you opened it."
+            "Opens an application on the active computer, or uses the connected Android companion "
+            "when running on Android. URLs and files are opened with an available platform opener. "
+            "Always call this tool and report its returned success or error accurately."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "app_name": {
                     "type": "STRING",
-                    "description": "Exact name of the application (e.g. 'WhatsApp', 'Chrome', 'Spotify')"
+                    "description": "Application name, URL, or file path (e.g. 'YouTube', 'Chrome', or 'https://example.com')."
+                },
+                "package": {
+                    "type": "STRING",
+                    "description": "Optional Android package id when launching an app through the companion."
+                },
+                "device": {
+                    "type": "STRING",
+                    "description": "Optional connected Android companion name or id, needed only when more than one is online."
                 }
             },
             "required": ["app_name"]
@@ -2681,8 +2690,8 @@ class BrahmaLive:
                     break
             if clean_app_candidate in _APP_ALIASES or any(clean_app_candidate in k for k in _APP_ALIASES):
                 def _run_open_local_app():
-                    open_app({"app_name": clean_app_candidate}, player=self.ui)
-                    self.speak(f"Opening {clean_app_candidate}, sir.")
+                    result = open_app({"app_name": clean_app_candidate}, player=self.ui)
+                    self.speak(str(result))
                 threading.Thread(target=_run_open_local_app, daemon=True).start()
                 return
 
@@ -3923,6 +3932,7 @@ class BrahmaLive:
 
         loop   = asyncio.get_event_loop()
         result = "Done."
+        tool_succeeded = True
 
         try:
             if name == "computer_settings":
@@ -3937,7 +3947,11 @@ class BrahmaLive:
 
             elif name == "open_app":
                 r = await loop.run_in_executor(None, lambda: open_app(parameters=args, response=None, player=self.ui))
-                result = r or f"Opened {args.get('app_name')}."
+                result = r if r is not None else ToolResult(
+                    "App launcher returned no execution result.",
+                    success=False,
+                    error_code="EMPTY_RESULT",
+                )
                 
             elif name == "check_instagram_messages":
                 self.ui.write_log("SYS: Checking Instagram messages...")
@@ -4084,7 +4098,11 @@ class BrahmaLive:
 
             elif name == "browser_control":
                 r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
-                result = r or "Done."
+                result = r if r is not None else ToolResult(
+                    "Browser control returned no execution result.",
+                    success=False,
+                    error_code="EMPTY_RESULT",
+                )
 
             elif name == "file_controller":
                 r = await loop.run_in_executor(None, lambda: file_controller(parameters=args, player=self.ui))
@@ -4420,10 +4438,20 @@ class BrahmaLive:
 
                 threading.Thread(target=_shutdown, daemon=True).start()
             else:
-                result = f"Unknown tool: {name}"
+                result = ToolResult(
+                    f"Unknown tool: {name}",
+                    success=False,
+                    error_code="UNKNOWN_TOOL",
+                )
 
         except Exception as e:
-            result = f"Tool '{name}' failed: {e}"
+            tool_succeeded = False
+            result = ToolResult(
+                f"Tool '{name}' failed: {e}",
+                success=False,
+                error=str(e),
+                error_code="TOOL_EXCEPTION",
+            )
             tb_str = traceback.format_exc()
             traceback.print_exc()
             try:
@@ -4433,9 +4461,38 @@ class BrahmaLive:
                 pass
             self.speak_error(name, e)
 
+        if name.startswith("connect_") and isinstance(result, str):
+            try:
+                connect_result = json.loads(result)
+                if isinstance(connect_result, dict) and connect_result.get("success") is False:
+                    message = str(connect_result.get("error") or "The device command failed.")
+                    result = ToolResult(
+                        message,
+                        success=False,
+                        error=message,
+                        error_code=str(connect_result.get("error_code") or "COMMAND_FAILED"),
+                        data=connect_result,
+                    )
+            except (TypeError, ValueError):
+                pass
+
+        if isinstance(result, dict) and result.get("success") is False:
+            tool_succeeded = False
+        elif getattr(result, "success", None) is False:
+            tool_succeeded = False
+
         try:
-            self.speak(f"{name.replace('_', ' ')} completed.")
-            self.ui.finish_task_workspace(result, "Task completed.", 100)
+            if tool_succeeded:
+                self.speak(f"{name.replace('_', ' ')} completed.")
+                self.ui.finish_task_workspace(result, "Task completed.", 100)
+            else:
+                failure_message = (
+                    result.get("error") or result.get("message") or str(result)
+                    if isinstance(result, dict)
+                    else str(result)
+                )
+                self.speak(failure_message)
+                self.ui.finish_task_workspace(failure_message, "Task failed.", 0)
         except Exception:
             pass
 
@@ -4458,17 +4515,18 @@ class BrahmaLive:
                 elif len(cl) > 15 and not cl.startswith("#") and len(bullets) < 4:
                     bullets.append(cl)
 
-            self.ui.show_hud_deliverable(
-                title=f"{tool_title.upper()} DELIVERABLE",
-                summary=res_str[:160] if not bullets else "",
-                bullets=bullets[:5],
-                file_path=detected_file,
-                kind=name
-            )
+            if tool_succeeded:
+                self.ui.show_hud_deliverable(
+                    title=f"{tool_title.upper()} DELIVERABLE",
+                    summary=res_str[:160] if not bullets else "",
+                    bullets=bullets[:5],
+                    file_path=detected_file,
+                    kind=name
+                )
         except Exception:
             pass
 
-        tool_voice = self._connect_tool_voice(name, result)
+        tool_voice = self._connect_tool_voice(name, result) if tool_succeeded else None
         if tool_voice:
             try:
                 self.ui.write_log(f"Brahma Evo: {tool_voice}")
@@ -4484,9 +4542,16 @@ class BrahmaLive:
 
         print(f"[BRAHMA EVO] 📤 {name} → {str(result)[:80]}")
 
+        if hasattr(result, "to_dict"):
+            response_payload = result.to_dict()
+        elif isinstance(result, dict) and "success" in result:
+            response_payload = result
+        else:
+            response_payload = {"result": result}
+
         return types.FunctionResponse(
             id=fc.id, name=name,
-            response={"result": result}
+            response=response_payload
         )
 
     async def _serve_dashboard(self):
